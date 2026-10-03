@@ -1,5 +1,5 @@
-import React from 'react';
-import { Volume2, VolumeX, Eye, ZoomIn, Shapes, Box, Sparkles, Paintbrush } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Volume2, VolumeX, Eye, ZoomIn, Shapes, Box, Sparkles, Paintbrush, Maximize, Minimize } from 'lucide-react';
 
 interface HeaderProps {
   activeTab: 'hexagon' | 'cube' | 'sandbox' | 'studio';
@@ -22,6 +22,28 @@ export const Header: React.FC<HeaderProps> = ({
   soundEnabled,
   setSoundEnabled,
 }) => {
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(() => {});
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      }
+    }
+  };
+
   return (
     <header className="app-header">
       <div className="brand-section">
@@ -36,6 +58,18 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* SNI Akadálymentesítési sáv */}
       <div className="accessibility-bar" role="toolbar" aria-label="Kisegítő lehetőségek">
+        {/* Teljes képernyős nézet gomb */}
+        <button
+          type="button"
+          className={`toggle-chip ${isFullscreen ? 'active' : ''}`}
+          onClick={toggleFullscreen}
+          title={isFullscreen ? 'Kilépés a teljes képernyőből (Esc)' : 'Teljes képernyős nézet megnyitása'}
+          aria-pressed={isFullscreen}
+        >
+          {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
+          <span>{isFullscreen ? 'Ablakos mód' : 'Teljes képernyő'}</span>
+        </button>
+
         <button
           type="button"
           className={`toggle-chip ${soundEnabled ? 'active' : ''}`}

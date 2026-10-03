@@ -21,10 +21,22 @@ import {
   Hexagon as HexagonIcon,
   PenTool,
   Check,
-  X
+  X,
+  Undo2,
+  Redo2,
+  Maximize,
+  Minimize
 } from 'lucide-react';
 import { downloadCanvasAsBmp } from '../utils/bmpEncoder';
 import { speakText } from '../utils/speech';
+
+export interface StudioHistoryState {
+  shapes: PlacedShape[];
+  lines: DrawnLine[];
+  canvasWidth: number;
+  canvasHeight: number;
+  drawingDataUrl: string;
+}
 
 export type ShapeType = 
   | 'triangle' 
@@ -69,6 +81,7 @@ export interface DrawnLine {
 
 export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const renderCanvasRef = useRef<() => void>(() => {});
 
   // Eszközök: select (mozgatás/méretezés), line (vonal), brush (ecset), eraser (radír), drawShape (húzással rajzolás), customPoly (saját sokszög)
   const [tool, setTool] = useState<'select' | 'line' | 'brush' | 'eraser' | 'drawShape' | 'customPoly'>('select');
@@ -76,6 +89,20 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
   const [activeColor, setActiveColor] = useState<string>('#3b82f6');
   const [brushSize] = useState<number>(5);
   const [snapToGrid, setSnapToGrid] = useState<boolean>(true);
+
+  // Lapméret (szélesség és magasság képpontban)
+  const [canvasWidth, setCanvasWidth] = useState<number>(700);
+  const [canvasHeight, setCanvasHeight] = useState<number>(440);
+  const [isResizingSheet, setIsResizingSheet] = useState<'e' | 's' | 'se' | null>(null);
+  const sheetResizeStartRef = useRef<{ startX: number; startY: number; startW: number; startH: number }>({
+    startX: 0,
+    startY: 0,
+    startW: 700,
+    startH: 440,
+  });
+
+  // Teljes képernyős állapot
+  const [isStudioFullscreen, setIsStudioFullscreen] = useState<boolean>(false);
 
   // Kezdő alakzatok a vásznon: háromszög, négyzet és hatszög
   const [shapes, setShapes] = useState<PlacedShape[]>([
@@ -86,6 +113,20 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
 
   const [lines, setLines] = useState<DrawnLine[]>([]);
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>('1');
+
+  // Előzmények (Undo / Redo) állapotok
+  const [history, setHistory] = useState<StudioHistoryState[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const historyRef = useRef<StudioHistoryState[]>([]);
+  const historyIndexRef = useRef<number>(-1);
+
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
+
+  useEffect(() => {
+    historyIndexRef.current = historyIndex;
+  }, [historyIndex]);
 
   // Mozgatási és méretezési állapotok
   const [isDragging, setIsDragging] = useState<boolean>(false);
@@ -139,10 +180,235 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
   useEffect(() => {
     if (!drawingLayerRef.current) {
       const offscreen = document.createElement('canvas');
-      offscreen.width = 680;
-      offscreen.height = 430;
+      offscreen.width = 700;
+      offscreen.height = 440;
       drawingLayerRef.current = offscreen;
+
+      // Kezdeti állapot pillanatkép
+      const initialSnapshot: StudioHistoryState = {
+        shapes: JSON.parse(JSON.stringify(shapes)),
+        lines: JSON.parse(JSON.stringify(lines)),
+        canvasWidth: 700,
+        canvasHeight: 440,
+        drawingDataUrl: offscreen.toDataURL(),
+      };
+      setHistory([initialSnapshot]);
+      setHistoryIndex(0);
+      historyRef.current = [initialSnapshot];
+      historyIndexRef.current = 0;
     }
+  }, []);
+
+  // --- ELŐZMÉNYEK (UNDO / REDO) KEZELÉSE ---
+  const pushSnapshot = (
+    customShapes?: PlacedShape[],
+    customLines?: DrawnLine[],
+    customW?: number,
+    customH?: number,
+    customDrawingUrl?: string
+  ) => {
+    const currentUrl = customDrawingUrl ?? (drawingLayerRef.current ? drawingLayerRef.current.toDataURL() : '');
+    const snapshot: StudioHistoryState = {
+      shapes: JSON.parse(JSON.stringify(customShapes ?? shapes)),
+      lines: JSON.parse(JSON.stringify(customLines ?? lines)),
+      canvasWidth: customW ?? canvasWidth,
+      canvasHeight: customH ?? canvasHeight,
+      drawingDataUrl: currentUrl,
+    };
+
+    const currIdx = historyIndexRef.current;
+    const currHist = historyRef.current;
+
+    const trimmed = currHist.slice(0, currIdx + 1);
+    trimmed.push(snapshot);
+    if (trimmed.length > 30) {
+      trimmed.shift();
+    }
+    const newIdx = trimmed.length - 1;
+
+    historyRef.current = trimmed;
+    historyIndexRef.current = newIdx;
+    setHistory(trimmed);
+    setHistoryIndex(newIdx);
+  };
+
+  const applySnapshot = (snapshot: StudioHistoryState) => {
+    setShapes(JSON.parse(JSON.stringify(snapshot.shapes)));
+    setLines(JSON.parse(JSON.stringify(snapshot.lines)));
+    setCanvasWidth(snapshot.canvasWidth);
+    setCanvasHeight(snapshot.canvasHeight);
+
+    if (drawingLayerRef.current) {
+      const offscreen = drawingLayerRef.current;
+      if (offscreen.width !== snapshot.canvasWidth || offscreen.height !== snapshot.canvasHeight) {
+        offscreen.width = snapshot.canvasWidth;
+        offscreen.height = snapshot.canvasHeight;
+      }
+      const offCtx = offscreen.getContext('2d');
+      if (offCtx) {
+        offCtx.clearRect(0, 0, offscreen.width, offscreen.height);
+        if (snapshot.drawingDataUrl) {
+          const img = new Image();
+          img.onload = () => {
+            offCtx.drawImage(img, 0, 0);
+            renderCanvasRef.current?.();
+          };
+          img.src = snapshot.drawingDataUrl;
+        } else {
+          renderCanvasRef.current?.();
+        }
+      }
+    }
+  };
+
+  const handleUndo = () => {
+    const currIdx = historyIndexRef.current;
+    const currHist = historyRef.current;
+    if (currIdx > 0) {
+      const prevIdx = currIdx - 1;
+      const target = currHist[prevIdx];
+      if (target) {
+        applySnapshot(target);
+        historyIndexRef.current = prevIdx;
+        setHistoryIndex(prevIdx);
+        if (soundEnabled) speakText('Visszavonás');
+      }
+    }
+  };
+
+  const handleRedo = () => {
+    const currIdx = historyIndexRef.current;
+    const currHist = historyRef.current;
+    if (currIdx < currHist.length - 1) {
+      const nextIdx = currIdx + 1;
+      const target = currHist[nextIdx];
+      if (target) {
+        applySnapshot(target);
+        historyIndexRef.current = nextIdx;
+        setHistoryIndex(nextIdx);
+        if (soundEnabled) speakText('Előre vonás');
+      }
+    }
+  };
+
+  // Visszavonás és újra billentyűparancsok (Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) {
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        handleUndo();
+      } else if (
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z')
+      ) {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // --- LAPMÉRET VÁLTOZTATÁSA ÉS FOGANTYÚK ---
+  const resizeCanvas = (newW: number, newH: number) => {
+    const targetW = Math.max(400, Math.min(1150, Math.round(newW)));
+    const targetH = Math.max(300, Math.min(750, Math.round(newH)));
+
+    if (drawingLayerRef.current) {
+      const oldCanvas = drawingLayerRef.current;
+      if (oldCanvas.width !== targetW || oldCanvas.height !== targetH) {
+        const newOffscreen = document.createElement('canvas');
+        newOffscreen.width = targetW;
+        newOffscreen.height = targetH;
+        const newCtx = newOffscreen.getContext('2d');
+        if (newCtx) {
+          newCtx.drawImage(oldCanvas, 0, 0);
+        }
+        drawingLayerRef.current = newOffscreen;
+      }
+    }
+    setCanvasWidth(targetW);
+    setCanvasHeight(targetH);
+  };
+
+  const applyCanvasPreset = (w: number, h: number, name: string) => {
+    resizeCanvas(w, h);
+    pushSnapshot(undefined, undefined, w, h);
+    if (soundEnabled) speakText(`Lapméret beállítva: ${name}`);
+  };
+
+  const handleSheetResizeMouseDown = (dir: 'e' | 's' | 'se', e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingSheet(dir);
+    sheetResizeStartRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startW: canvasWidth,
+      startH: canvasHeight,
+    };
+  };
+
+  useEffect(() => {
+    if (!isResizingSheet) return;
+
+    const onWindowMouseMove = (e: MouseEvent) => {
+      const deltaX = e.clientX - sheetResizeStartRef.current.startX;
+      const deltaY = e.clientY - sheetResizeStartRef.current.startY;
+
+      let newW = sheetResizeStartRef.current.startW;
+      let newH = sheetResizeStartRef.current.startH;
+
+      if (isResizingSheet === 'e' || isResizingSheet === 'se') {
+        newW = Math.max(400, Math.min(1150, Math.round(sheetResizeStartRef.current.startW + deltaX)));
+      }
+      if (isResizingSheet === 's' || isResizingSheet === 'se') {
+        newH = Math.max(300, Math.min(750, Math.round(sheetResizeStartRef.current.startH + deltaY)));
+      }
+
+      resizeCanvas(newW, newH);
+    };
+
+    const onWindowMouseUp = () => {
+      setIsResizingSheet(null);
+      pushSnapshot();
+      if (soundEnabled) {
+        speakText(`Rajzlap átméretezve: ${canvasWidth} szor ${canvasHeight} képpont`);
+      }
+    };
+
+    window.addEventListener('mousemove', onWindowMouseMove);
+    window.addEventListener('mouseup', onWindowMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onWindowMouseMove);
+      window.removeEventListener('mouseup', onWindowMouseUp);
+    };
+  }, [isResizingSheet, canvasWidth, canvasHeight, soundEnabled]);
+
+  // --- TELJES KÉPERNYŐS NÉZET ---
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+      setIsStudioFullscreen(true);
+      if (soundEnabled) speakText('Teljes képernyős nézet bekapcsolva');
+    } else {
+      document.exitFullscreen?.().catch(() => {});
+      setIsStudioFullscreen(false);
+      if (soundEnabled) speakText('Kilépés a teljes képernyőből');
+    }
+  };
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsStudioFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
   }, []);
 
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
@@ -160,9 +426,11 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
       flipH: false,
       flipV: false,
     };
-    setShapes(prev => [...prev, newShape]);
+    const nextShapes = [...shapes, newShape];
+    setShapes(nextShapes);
     setSelectedShapeId(newShape.id);
     setTool('select');
+    pushSnapshot(nextShapes);
 
     if (soundEnabled) {
       const names: Record<ShapeType, string> = {
@@ -190,16 +458,16 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
   // --- MÉRET VÁLTOZTATÁSA ---
   const changeSelectedSize = (delta: number) => {
     if (!selectedShapeId) return;
-    setShapes(prev =>
-      prev.map(s => {
-        if (s.id === selectedShapeId) {
-          const next = Math.max(25, Math.min(240, s.size + delta));
-          if (soundEnabled) speakText(`Méret: ${Math.round(next)} képpont`);
-          return { ...s, size: next };
-        }
-        return s;
-      })
-    );
+    const nextShapes = shapes.map(s => {
+      if (s.id === selectedShapeId) {
+        const next = Math.max(25, Math.min(240, s.size + delta));
+        if (soundEnabled) speakText(`Méret: ${Math.round(next)} képpont`);
+        return { ...s, size: next };
+      }
+      return s;
+    });
+    setShapes(nextShapes);
+    pushSnapshot(nextShapes);
   };
 
   const setSelectedSizeDirect = (newSize: number) => {
@@ -215,11 +483,13 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     const newShape: PlacedShape = {
       ...selectedShape,
       id: Date.now().toString(),
-      x: Math.min(630, selectedShape.x + 35),
-      y: Math.min(380, selectedShape.y + 35),
+      x: Math.min(canvasWidth - 50, selectedShape.x + 35),
+      y: Math.min(canvasHeight - 50, selectedShape.y + 35),
     };
-    setShapes(prev => [...prev, newShape]);
+    const nextShapes = [...shapes, newShape];
+    setShapes(nextShapes);
     setSelectedShapeId(newShape.id);
+    pushSnapshot(nextShapes);
 
     if (soundEnabled) {
       speakText('Alakzat lemásolva! Mozgasd el egérrel a helyére!');
@@ -229,44 +499,45 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
   // --- TÜKRÖZÉS ÉS FORGATÁS ---
   const flipSelectedH = () => {
     if (!selectedShapeId) return;
-    setShapes(prev =>
-      prev.map(s => {
-        if (s.id === selectedShapeId) {
-          const next = !s.flipH;
-          if (soundEnabled) speakText('Vízszintes tükrözés');
-          return { ...s, flipH: next };
-        }
-        return s;
-      })
-    );
+    const nextShapes = shapes.map(s => {
+      if (s.id === selectedShapeId) {
+        const next = !s.flipH;
+        if (soundEnabled) speakText('Vízszintes tükrözés');
+        return { ...s, flipH: next };
+      }
+      return s;
+    });
+    setShapes(nextShapes);
+    pushSnapshot(nextShapes);
   };
 
   const flipSelectedV = () => {
     if (!selectedShapeId) return;
-    setShapes(prev =>
-      prev.map(s => {
-        if (s.id === selectedShapeId) {
-          const next = !s.flipV;
-          if (soundEnabled) speakText('Függőleges tükrözés');
-          return { ...s, flipV: next };
-        }
-        return s;
-      })
-    );
+    const nextShapes = shapes.map(s => {
+      if (s.id === selectedShapeId) {
+        const next = !s.flipV;
+        if (soundEnabled) speakText('Függőleges tükrözés');
+        return { ...s, flipV: next };
+      }
+      return s;
+    });
+    setShapes(nextShapes);
+    pushSnapshot(nextShapes);
   };
 
   const rotateSelected = (degrees: number) => {
     if (!selectedShapeId) return;
-    setShapes(prev =>
-      prev.map(s => {
-        if (s.id === selectedShapeId) {
-          const nextRot = (s.rotation + degrees + 360) % 360;
-          if (soundEnabled) speakText(`Forgatás: ${nextRot} fok`);
-          return { ...s, rotation: nextRot };
-        }
-        return s;
-      })
-    );
+    let newRot = 0;
+    const nextShapes = shapes.map(s => {
+      if (s.id === selectedShapeId) {
+        newRot = (s.rotation + degrees + 360) % 360;
+        return { ...s, rotation: newRot };
+      }
+      return s;
+    });
+    if (soundEnabled) speakText(`Forgatás: ${newRot} fok`);
+    setShapes(nextShapes);
+    pushSnapshot(nextShapes);
   };
 
   const setRotationDirect = (deg: number) => {
@@ -279,8 +550,10 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
   // --- TÖRLÉS ---
   const deleteSelected = () => {
     if (!selectedShapeId) return;
-    setShapes(prev => prev.filter(s => s.id !== selectedShapeId));
+    const nextShapes = shapes.filter(s => s.id !== selectedShapeId);
+    setShapes(nextShapes);
     setSelectedShapeId(null);
+    pushSnapshot(nextShapes);
     if (soundEnabled) speakText('Alakzat törölve');
   };
 
@@ -322,11 +595,13 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
       customPoints: normalizedPoints,
     };
 
-    setShapes(prev => [...prev, newShape]);
+    const nextShapes = [...shapes, newShape];
+    setShapes(nextShapes);
     setSelectedShapeId(newShape.id);
     setPolyPoints([]);
     setPolyCursor(null);
     setTool('select');
+    pushSnapshot(nextShapes);
 
     if (soundEnabled) {
       speakText('Saját alakzat elkészült! Most már szabadon mozgathatod, méretezheted és forgathatod!');
@@ -342,6 +617,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
 
   // --- CANVAS TELJES ÚJRARAJZOLÁSA ---
   const renderCanvas = () => {
+    renderCanvasRef.current = renderCanvas;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -954,7 +1230,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
   // Újrarajzolás változáskor
   useEffect(() => {
     renderCanvas();
-  }, [shapes, lines, selectedShapeId, tool, linePreview, shapeDragCurrent, polyPoints, polyCursor, snapLines]);
+  }, [shapes, lines, selectedShapeId, tool, linePreview, shapeDragCurrent, polyPoints, polyCursor, snapLines, canvasWidth, canvasHeight]);
 
   // --- EGÉRKEZELÉS (MOUSE EVENTS) ---
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1229,9 +1505,11 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
           flipV: false,
         };
 
-        setShapes(prev => [...prev, newShape]);
+        const nextShapes = [...shapes, newShape];
+        setShapes(nextShapes);
         setSelectedShapeId(newShape.id);
         setTool('select');
+        pushSnapshot(nextShapes);
 
         if (soundEnabled) {
           speakText('Új alakzat sikeresen megrajzolva!');
@@ -1255,11 +1533,18 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
           color: activeColor,
           width: 3,
         };
-        setLines(prev => [...prev, newLine]);
+        const nextLines = [...lines, newLine];
+        setLines(nextLines);
+        pushSnapshot(shapes, nextLines);
         if (soundEnabled) speakText('Él összekötve!');
       }
       setLineStart(null);
       setLinePreview(null);
+    }
+
+    // Ha alakzatot mozgattunk, méreteztünk, forgattunk vagy szabadkézzel rajzoltunk/radíroztunk:
+    if (isDragging || isResizing || isRotating || isDrawing) {
+      pushSnapshot();
     }
 
     setIsDragging(false);
@@ -1302,12 +1587,13 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
   const handleClearAll = () => {
     if (drawingLayerRef.current) {
       const offCtx = drawingLayerRef.current.getContext('2d');
-      offCtx?.clearRect(0, 0, 680, 430);
+      offCtx?.clearRect(0, 0, canvasWidth, canvasHeight);
     }
     setShapes([]);
     setLines([]);
     setPolyPoints([]);
     setSelectedShapeId(null);
+    pushSnapshot([], [], undefined, undefined, '');
     renderCanvas();
     if (soundEnabled) speakText('Vászon kiürítve');
   };
@@ -1325,26 +1611,41 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
   };
 
   return (
-    <div className="content-card">
-      {/* Fejléc és BMP mentés gomb */}
+    <div className={`content-card ${isStudioFullscreen ? 'studio-fullscreen-card' : ''}`}>
+      {/* Fejléc és vezérlő gombok */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
         <div>
           <h2>Alakzat Műhely: Szabad Alakzatkészítés & Méretezés</h2>
           <p style={{ color: 'var(--text-muted)' }}>
-            Mozgasd az alakzatokat egérrel, változtasd meg a méretüket, és készíts szabadon kört, háromszöget, négyszöget vagy saját sokszöget!
+            Mozgasd az alakzatokat egérrel, változtasd meg a méretüket, rajzolj szabadon tetszőleges formákat, és szabd testre a rajzlap méretét!
           </p>
         </div>
 
-        <button
-          type="button"
-          className="btn-success attention-pulse"
-          onClick={handleSaveBmp}
-          style={{ padding: '12px 24px', fontSize: '1.05rem', fontWeight: 800 }}
-          title="Letöltés valódi Windows Paint formátumban (.bmp)"
-        >
-          <Download size={22} />
-          <span>Mentés BMP formátumban (.bmp)</span>
-        </button>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Teljes képernyős nézet gomb */}
+          <button
+            type="button"
+            className={isStudioFullscreen ? 'btn-primary' : 'btn-secondary'}
+            onClick={toggleFullscreen}
+            title={isStudioFullscreen ? 'Kilépés a teljes képernyős módból' : 'Teljes képernyős nézet megnyitása'}
+            style={{ padding: '10px 16px', fontSize: '0.95rem', fontWeight: 700 }}
+          >
+            {isStudioFullscreen ? <Minimize size={19} /> : <Maximize size={19} />}
+            <span>{isStudioFullscreen ? 'Kis ablak' : 'Teljes képernyő'}</span>
+          </button>
+
+          {/* Mentés BMP formátumban */}
+          <button
+            type="button"
+            className="btn-success attention-pulse"
+            onClick={handleSaveBmp}
+            style={{ padding: '10px 20px', fontSize: '1rem', fontWeight: 800 }}
+            title="Letöltés valódi Windows Paint formátumban (.bmp)"
+          >
+            <Download size={20} />
+            <span>Mentés BMP (.bmp)</span>
+          </button>
+        </div>
       </div>
 
       {/* 1. SZABAD ALAKZATOK HOZZÁADÁSA TETSZŐLEGES TÍPUSSAL */}
@@ -1507,6 +1808,8 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
               step="5"
               value={selectedShape.size}
               onChange={e => setSelectedSizeDirect(Number(e.target.value))}
+              onMouseUp={() => pushSnapshot()}
+              onTouchEnd={() => pushSnapshot()}
               className="custom-slider"
               style={{ width: '160px' }}
               title={`Méret: ${Math.round(selectedShape.size)}px`}
@@ -1529,7 +1832,10 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
               <button 
                 type="button" 
                 className="btn-secondary" 
-                onClick={() => setSelectedSizeDirect(45)}
+                onClick={() => {
+                  setSelectedSizeDirect(45);
+                  pushSnapshot(shapes.map(s => s.id === selectedShapeId ? { ...s, size: 45 } : s));
+                }}
                 style={{ padding: '4px 8px', fontSize: '0.82rem' }}
               >
                 Kicsi (45px)
@@ -1537,7 +1843,10 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
               <button 
                 type="button" 
                 className="btn-secondary" 
-                onClick={() => setSelectedSizeDirect(75)}
+                onClick={() => {
+                  setSelectedSizeDirect(75);
+                  pushSnapshot(shapes.map(s => s.id === selectedShapeId ? { ...s, size: 75 } : s));
+                }}
                 style={{ padding: '4px 8px', fontSize: '0.82rem' }}
               >
                 Közepes (75px)
@@ -1545,7 +1854,10 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
               <button 
                 type="button" 
                 className="btn-secondary" 
-                onClick={() => setSelectedSizeDirect(125)}
+                onClick={() => {
+                  setSelectedSizeDirect(125);
+                  pushSnapshot(shapes.map(s => s.id === selectedShapeId ? { ...s, size: 125 } : s));
+                }}
                 style={{ padding: '4px 8px', fontSize: '0.82rem' }}
               >
                 Nagy (125px)
@@ -1626,6 +1938,8 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
                 step="5"
                 value={selectedShape.rotation}
                 onChange={e => setRotationDirect(Number(e.target.value))}
+                onMouseUp={() => pushSnapshot()}
+                onTouchEnd={() => pushSnapshot()}
                 className="custom-slider"
                 style={{ width: '110px' }}
                 title={`Forgatás: ${selectedShape.rotation}°`}
@@ -1635,7 +1949,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         </div>
       )}
 
-      {/* 3. ESZKÖZTÁR: MOZGATÁS, ALAKZAT HÚZÁS, SAJÁT SOKSZÖG, ECSET ÉS SZÍNEK */}
+      {/* 3. ESZKÖZTÁR: VISSZAVONÁS/ÚJRA, MOZGATÁS, ALAKZAT HÚZÁS, SAJÁT SOKSZÖG, ECSET ÉS SZÍNEK */}
       <div style={{ 
         display: 'flex', 
         justifyContent: 'space-between', 
@@ -1647,6 +1961,47 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         borderRadius: '12px', 
         border: '1px solid var(--bg-card-border)' 
       }}>
+        {/* Visszavonás és Előre / Mégis (Undo / Redo) */}
+        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleUndo}
+            disabled={historyIndex <= 0}
+            title="Visszavonás (Ctrl+Z)"
+            style={{ 
+              padding: '8px 12px', 
+              fontSize: '0.88rem', 
+              fontWeight: 700, 
+              opacity: historyIndex <= 0 ? 0.4 : 1,
+              cursor: historyIndex <= 0 ? 'not-allowed' : 'pointer'
+            }}
+          >
+            <Undo2 size={17} />
+            <span>Vissza</span>
+          </button>
+
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={handleRedo}
+            disabled={historyIndex >= history.length - 1}
+            title="Mégis / Előre vonás (Ctrl+Y vagy Ctrl+Shift+Z)"
+            style={{ 
+              padding: '8px 12px', 
+              fontSize: '0.88rem', 
+              fontWeight: 700, 
+              opacity: historyIndex >= history.length - 1 ? 0.4 : 1,
+              cursor: historyIndex >= history.length - 1 ? 'not-allowed' : 'pointer'
+            }}
+          >
+            <Redo2 size={17} />
+            <span>Előre</span>
+          </button>
+        </div>
+
+        <div style={{ width: '1px', height: '26px', background: 'var(--bg-card-border)' }} />
+
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
           {/* Mozgatás & Méretezés eszköz */}
           <button
@@ -1869,49 +2224,139 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         </div>
       )}
 
-      {/* 4. RAJZVÁSZON (CANVAS) */}
-      <div className="paint-window-frame" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
-        <canvas
-          ref={canvasRef}
-          width={680}
-          height={430}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
-          style={{
-            maxWidth: '100%',
-            height: 'auto',
-            borderRadius: '8px',
-            boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-            cursor: tool === 'select'
-              ? (isRotating
-                ? 'grabbing'
-                : hoverHandle === 'rotate'
-                ? 'crosshair'
-                : (isResizing && (resizeHandle === 'nw' || resizeHandle === 'se')) || hoverHandle === 'nw' || hoverHandle === 'se'
-                ? 'nwse-resize'
-                : (isResizing && (resizeHandle === 'ne' || resizeHandle === 'sw')) || hoverHandle === 'ne' || hoverHandle === 'sw'
-                ? 'nesw-resize'
-                : isDragging
-                ? 'grabbing'
-                : hoverHandle === 'body'
-                ? 'grab'
-                : 'default')
-              : (tool === 'drawShape' || tool === 'customPoly' || tool === 'line' ? 'crosshair' : 'default'),
-            background: '#ffffff',
-            touchAction: 'none'
-          }}
-        />
+      {/* 4. RAJZVÁSZON (CANVAS) ÉS LAPMÉRET VEZÉRLÉS */}
+      <div className="paint-window-frame" style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px' }}>
+        
+        {/* Lapméret információs és beállító sáv */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--primary)' }}>
+              📄 Rajzlap Mérete:
+            </span>
+            <span style={{ 
+              background: 'white', 
+              padding: '4px 10px', 
+              borderRadius: '8px', 
+              fontWeight: 700, 
+              fontSize: '0.88rem', 
+              border: '1px solid var(--bg-card-border)' 
+            }}>
+              {canvasWidth} × {canvasHeight} px
+            </span>
+
+            {/* Méret előbeállítások (Presets) */}
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className={`btn-secondary ${canvasWidth === 700 && canvasHeight === 440 ? 'btn-primary' : ''}`}
+                onClick={() => applyCanvasPreset(700, 440, 'Normál (700 × 440)')}
+                style={{ padding: '4px 10px', fontSize: '0.82rem' }}
+                title="Alapértelmezett lapméret"
+              >
+                Normál (700×440)
+              </button>
+              <button
+                type="button"
+                className={`btn-secondary ${canvasWidth === 880 && canvasHeight === 480 ? 'btn-primary' : ''}`}
+                onClick={() => applyCanvasPreset(880, 480, 'Szélesvásznú (880 × 480)')}
+                style={{ padding: '4px 10px', fontSize: '0.82rem' }}
+                title="Szélesvásznú lapméret"
+              >
+                Széles (880×480)
+              </button>
+              <button
+                type="button"
+                className={`btn-secondary ${canvasWidth === 980 && canvasHeight === 580 ? 'btn-primary' : ''}`}
+                onClick={() => applyCanvasPreset(980, 580, 'Nagy rajzlap (980 × 580)')}
+                style={{ padding: '4px 10px', fontSize: '0.82rem' }}
+                title="Nagy rajzlap tágas alkotáshoz"
+              >
+                Nagy (980×580)
+              </button>
+              <button
+                type="button"
+                className={`btn-secondary ${canvasWidth === 580 && canvasHeight === 580 ? 'btn-primary' : ''}`}
+                onClick={() => applyCanvasPreset(580, 580, 'Négyzetes (580 × 580)')}
+                style={{ padding: '4px 10px', fontSize: '0.82rem' }}
+                title="Négyzetes lapméret"
+              >
+                Négyzet (580×580)
+              </button>
+            </div>
+          </div>
+
+          <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+            💡 A lap szélén lévő kis fehér négyzetekkel (fogantyúkkal) egérrel is átméretezheted a rajzlapot!
+          </div>
+        </div>
+
+        {/* Görgethető munkaterület a lap számára */}
+        <div className="canvas-workspace">
+          <div className="canvas-sheet-wrapper" style={{ width: canvasWidth, height: canvasHeight }}>
+            <canvas
+              ref={canvasRef}
+              width={canvasWidth}
+              height={canvasHeight}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              style={{
+                display: 'block',
+                width: `${canvasWidth}px`,
+                height: `${canvasHeight}px`,
+                cursor: tool === 'select'
+                  ? (isRotating
+                    ? 'grabbing'
+                    : hoverHandle === 'rotate'
+                    ? 'crosshair'
+                    : (isResizing && (resizeHandle === 'nw' || resizeHandle === 'se')) || hoverHandle === 'nw' || hoverHandle === 'se'
+                    ? 'nwse-resize'
+                    : (isResizing && (resizeHandle === 'ne' || resizeHandle === 'sw')) || hoverHandle === 'ne' || hoverHandle === 'sw'
+                    ? 'nesw-resize'
+                    : isDragging
+                    ? 'grabbing'
+                    : hoverHandle === 'body'
+                    ? 'grab'
+                    : 'default')
+                  : (tool === 'drawShape' || tool === 'customPoly' || tool === 'line' ? 'crosshair' : 'default'),
+                background: '#ffffff',
+                touchAction: 'none'
+              }}
+            />
+
+            {/* Paint stílusú lapméretező fogantyúk */}
+            {/* Jobb oldali (kelet) fogantyú */}
+            <div
+              className="sheet-resize-handle sheet-handle-e"
+              onMouseDown={e => handleSheetResizeMouseDown('e', e)}
+              title="Lap szélességének változtatása (Jobbra-Balra húzás)"
+            />
+
+            {/* Alsó (dél) fogantyú */}
+            <div
+              className="sheet-resize-handle sheet-handle-s"
+              onMouseDown={e => handleSheetResizeMouseDown('s', e)}
+              title="Lap magasságának változtatása (Le-Fel húzás)"
+            />
+
+            {/* Jobb alsó (sarok) fogantyú */}
+            <div
+              className="sheet-resize-handle sheet-handle-se"
+              onMouseDown={e => handleSheetResizeMouseDown('se', e)}
+              title="Lap méretének változtatása mindkét irányban (Sarok húzása)"
+            />
+          </div>
+        </div>
 
         {tool === 'select' && (
-          <div style={{ marginTop: '8px', fontSize: '0.88rem', color: 'var(--primary)', fontWeight: 700 }}>
+          <div style={{ marginTop: '4px', fontSize: '0.88rem', color: 'var(--primary)', fontWeight: 700 }}>
             💡 <strong>Paint stílusú forgatás & méretezés:</strong> Ragadd meg a felső <strong>kék forgatás ikont (🔄)</strong> az elforgatáshoz! Alapesetben <strong>2°-onként</strong> fordul, a <strong>Shift gombot nyomva tartva</strong> pedig nevezetes szögekre (15°-onként) ugrik! A 4 saroknál pedig átméretezheted!
           </div>
         )}
 
         {tool === 'drawShape' && (
-          <div style={{ marginTop: '8px', fontSize: '0.88rem', color: 'var(--primary)', fontWeight: 700 }}>
+          <div style={{ marginTop: '4px', fontSize: '0.88rem', color: 'var(--primary)', fontWeight: 700 }}>
             📏 <strong>Húzással alakzatkészítés:</strong> Kattints és húzd az egeret, mint az igazi Paintben! Amikor felengeded, kész a választott alakzat!
           </div>
         )}

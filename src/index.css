@@ -695,6 +695,88 @@ body.high-contrast .paint-canvas-area {
   cursor: grabbing;
 }
 
+/* Paint Rajzlap és Munkaterület stílusok */
+.canvas-workspace {
+  background: #cbd5e1;
+  border-radius: var(--radius-md);
+  padding: 24px;
+  overflow: auto;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.15);
+  position: relative;
+}
+
+.canvas-sheet-wrapper {
+  position: relative;
+  display: inline-block;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.22);
+  line-height: 0;
+  user-select: none;
+}
+
+/* Paint stílusú lapméretező fogantyúk a lap szélén */
+.sheet-resize-handle {
+  position: absolute;
+  background: #ffffff;
+  border: 1.5px solid #0f172a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+  transition: transform 0.15s, background-color 0.15s;
+}
+
+.sheet-resize-handle:hover {
+  background: var(--primary);
+  transform: scale(1.3);
+}
+
+.sheet-handle-e {
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 9px;
+  height: 9px;
+  cursor: ew-resize;
+}
+
+.sheet-handle-s {
+  bottom: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 9px;
+  height: 9px;
+  cursor: ns-resize;
+}
+
+.sheet-handle-se {
+  right: -6px;
+  bottom: -6px;
+  width: 11px;
+  height: 11px;
+  cursor: nwse-resize;
+}
+
+/* Stúdió Teljes Képernyős Mód */
+.studio-fullscreen-card {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  z-index: 9999 !important;
+  border-radius: 0 !important;
+  margin: 0 !important;
+  overflow: auto !important;
+  padding: 16px 20px !important;
+  box-sizing: border-box !important;
+}
+
 /* Responsive */
 @media (max-width: 680px) {
   .app-container {
