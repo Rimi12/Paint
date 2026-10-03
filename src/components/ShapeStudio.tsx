@@ -3,20 +3,46 @@ import {
   Download, 
   Trash2, 
   RotateCw, 
-  RotateCcw,
-  FlipHorizontal,
-  FlipVertical,
-  Copy,
+  RotateCcw, 
+  FlipHorizontal, 
+  FlipVertical, 
+  Copy, 
   Paintbrush, 
   Eraser, 
-  MousePointer,
-  Slash,
-  Magnet
+  MousePointer, 
+  Slash, 
+  Magnet,
+  Maximize2,
+  Minimize2,
+  Square,
+  Circle as CircleIcon,
+  Triangle as TriangleIcon,
+  Star as StarIcon,
+  Hexagon as HexagonIcon,
+  PenTool,
+  Check,
+  X
 } from 'lucide-react';
 import { downloadCanvasAsBmp } from '../utils/bmpEncoder';
 import { speakText } from '../utils/speech';
 
-export type ShapeType = 'triangle' | 'square' | 'hexagon' | 'cube' | 'pyramid' | 'cylinder' | 'sphere';
+export type ShapeType = 
+  | 'triangle' 
+  | 'rightTriangle'
+  | 'square' 
+  | 'rectangle'
+  | 'circle' 
+  | 'rhombus' 
+  | 'trapezoid' 
+  | 'pentagon' 
+  | 'hexagon' 
+  | 'star'
+  | 'heart'
+  | 'custom'
+  | 'cube' 
+  | 'pyramid' 
+  | 'cylinder' 
+  | 'sphere';
 
 export interface PlacedShape {
   id: string;
@@ -28,6 +54,7 @@ export interface PlacedShape {
   color: string;
   flipH?: boolean;
   flipV?: boolean;
+  customPoints?: { x: number; y: number }[]; // relatív koordináták (0,0) középponthoz képest -1 és 1 között
 }
 
 export interface DrawnLine {
@@ -43,28 +70,47 @@ export interface DrawnLine {
 export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const [tool, setTool] = useState<'select' | 'line' | 'brush' | 'eraser'>('select');
+  // Eszközök: select (mozgatás/méretezés), line (vonal), brush (ecset), eraser (radír), drawShape (húzással rajzolás), customPoly (saját sokszög)
+  const [tool, setTool] = useState<'select' | 'line' | 'brush' | 'eraser' | 'drawShape' | 'customPoly'>('select');
+  const [activeDrawShapeType, setActiveDrawShapeType] = useState<ShapeType>('circle');
   const [activeColor, setActiveColor] = useState<string>('#3b82f6');
   const [brushSize] = useState<number>(5);
   const [snapToGrid, setSnapToGrid] = useState<boolean>(true);
 
   // Kezdő alakzatok a vásznon: háromszög, négyzet és hatszög
   const [shapes, setShapes] = useState<PlacedShape[]>([
-    { id: '1', type: 'triangle', x: 140, y: 160, size: 70, rotation: 0, color: '#3b82f6', flipH: false, flipV: false },
-    { id: '2', type: 'square', x: 300, y: 160, size: 60, rotation: 0, color: '#10b981', flipH: false, flipV: false },
-    { id: '3', type: 'hexagon', x: 470, y: 160, size: 70, rotation: 0, color: '#8b5cf6', flipH: false, flipV: false },
+    { id: '1', type: 'triangle', x: 140, y: 170, size: 70, rotation: 0, color: '#3b82f6', flipH: false, flipV: false },
+    { id: '2', type: 'square', x: 290, y: 170, size: 65, rotation: 0, color: '#10b981', flipH: false, flipV: false },
+    { id: '3', type: 'hexagon', x: 450, y: 170, size: 70, rotation: 0, color: '#8b5cf6', flipH: false, flipV: false },
   ]);
 
   const [lines, setLines] = useState<DrawnLine[]>([]);
   const [selectedShapeId, setSelectedShapeId] = useState<string | null>('1');
 
-  // Mozgatási és vonalhúzási állapotok
+  // Mozgatási és méretezési állapotok
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [dragOffset, setDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [isResizing, setIsResizing] = useState<boolean>(false);
+  const [resizeHandle, setResizeHandle] = useState<'nw' | 'ne' | 'se' | 'sw' | null>(null);
+  const [initialResizeDist, setInitialResizeDist] = useState<number>(0);
+  const [initialShapeSize, setInitialShapeSize] = useState<number>(0);
+
+  // Vonal és szabadkézi rajz állapotok
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const [lastDrawPos, setLastDrawPos] = useState<{ x: number; y: number } | null>(null);
   const [lineStart, setLineStart] = useState<{ x: number; y: number } | null>(null);
   const [linePreview, setLinePreview] = useState<{ x: number; y: number } | null>(null);
+
+  // Húzással alakzatkészítés állapota (drag to draw)
+  const [shapeDragStart, setShapeDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [shapeDragCurrent, setShapeDragCurrent] = useState<{ x: number; y: number } | null>(null);
+
+  // Saját sokszög készítő pontjai
+  const [polyPoints, setPolyPoints] = useState<{ x: number; y: number }[]>([]);
+  const [polyCursor, setPolyCursor] = useState<{ x: number; y: number } | null>(null);
+
+  // Mágneses igazítási vonalak visszajelzése
+  const [snapLines, setSnapLines] = useState<{ x1: number; y1: number; x2: number; y2: number }[]>([]);
 
   // Szabadkézi ecset réteg
   const drawingLayerRef = useRef<HTMLCanvasElement | null>(null);
@@ -80,14 +126,14 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
 
   const selectedShape = shapes.find(s => s.id === selectedShapeId);
 
-  // Új alakzat hozzáadása
+  // --- ALAKZAT HOZZÁADÁSA KATTINTÁSSAL ---
   const addShape = (type: ShapeType) => {
     const newShape: PlacedShape = {
       id: Date.now().toString(),
       type,
-      x: 180 + Math.floor(Math.random() * 220),
+      x: 200 + Math.floor(Math.random() * 200),
       y: 150 + Math.floor(Math.random() * 120),
-      size: type === 'square' ? 60 : 70,
+      size: type === 'square' || type === 'rectangle' ? 65 : 70,
       rotation: 0,
       color: activeColor,
       flipH: false,
@@ -99,36 +145,67 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
 
     if (soundEnabled) {
       const names: Record<ShapeType, string> = {
-        triangle: 'Háromszög hozzáadva',
-        square: 'Négyzet hozzáadva, a kocka alapja',
+        triangle: 'Egyenlő oldalú háromszög hozzáadva',
+        rightTriangle: 'Derékszögű háromszög hozzáadva',
+        square: 'Négyzet hozzáadva',
+        rectangle: 'Téglalap hozzáadva',
+        circle: 'Kör hozzáadva',
+        rhombus: 'Rombusz hozzáadva',
+        trapezoid: 'Trapéz hozzáadva',
+        pentagon: 'Ötszög hozzáadva',
         hexagon: 'Hatszög hozzáadva',
+        star: 'Csillag hozzáadva',
+        heart: 'Szív alakzat hozzáadva',
+        custom: 'Egyedi sokszög hozzáadva',
         cube: '3D Kocka hozzáadva',
         pyramid: '3D Gúla hozzáadva',
         cylinder: '3D Henger hozzáadva',
         sphere: '3D Gömb hozzáadva',
       };
-      speakText(names[type]);
+      speakText(names[type] || 'Alakzat hozzáadva');
     }
   };
 
-  // Kiválasztott alakzat másolása / duplikálása
+  // --- MÉRET VÁLTOZTATÁSA ---
+  const changeSelectedSize = (delta: number) => {
+    if (!selectedShapeId) return;
+    setShapes(prev =>
+      prev.map(s => {
+        if (s.id === selectedShapeId) {
+          const next = Math.max(25, Math.min(240, s.size + delta));
+          if (soundEnabled) speakText(`Méret: ${Math.round(next)} képpont`);
+          return { ...s, size: next };
+        }
+        return s;
+      })
+    );
+  };
+
+  const setSelectedSizeDirect = (newSize: number) => {
+    if (!selectedShapeId) return;
+    setShapes(prev =>
+      prev.map(s => (s.id === selectedShapeId ? { ...s, size: Math.max(25, Math.min(240, newSize)) } : s))
+    );
+  };
+
+  // --- MÁSOLÁS / KLÓNOZÁS ---
   const duplicateSelected = () => {
     if (!selectedShape) return;
     const newShape: PlacedShape = {
       ...selectedShape,
       id: Date.now().toString(),
-      x: Math.min(640, selectedShape.x + 35),
-      y: Math.min(390, selectedShape.y + 35),
+      x: Math.min(630, selectedShape.x + 35),
+      y: Math.min(380, selectedShape.y + 35),
     };
     setShapes(prev => [...prev, newShape]);
     setSelectedShapeId(newShape.id);
 
     if (soundEnabled) {
-      speakText('Alakzat lemásolva! Most forgasd el vagy tükrözd!');
+      speakText('Alakzat lemásolva! Mozgasd el egérrel a helyére!');
     }
   };
 
-  // Vízszintes tükrözés (Flip H)
+  // --- TÜKRÖZÉS ÉS FORGATÁS ---
   const flipSelectedH = () => {
     if (!selectedShapeId) return;
     setShapes(prev =>
@@ -143,14 +220,13 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     );
   };
 
-  // Függőleges tükrözés (Flip V)
   const flipSelectedV = () => {
     if (!selectedShapeId) return;
     setShapes(prev =>
       prev.map(s => {
         if (s.id === selectedShapeId) {
           const next = !s.flipV;
-          if (soundEnabled) speakText('Függőleges tükrözés, fejjel lefelé fordítva');
+          if (soundEnabled) speakText('Függőleges tükrözés');
           return { ...s, flipV: next };
         }
         return s;
@@ -158,7 +234,6 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     );
   };
 
-  // Forgatás fokkal
   const rotateSelected = (degrees: number) => {
     if (!selectedShapeId) return;
     setShapes(prev =>
@@ -173,7 +248,6 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     );
   };
 
-  // Közvetlen szögbeállítás csúszkával
   const setRotationDirect = (deg: number) => {
     if (!selectedShapeId) return;
     setShapes(prev =>
@@ -181,7 +255,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     );
   };
 
-  // Törlés
+  // --- TÖRLÉS ---
   const deleteSelected = () => {
     if (!selectedShapeId) return;
     setShapes(prev => prev.filter(s => s.id !== selectedShapeId));
@@ -189,7 +263,63 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     if (soundEnabled) speakText('Alakzat törölve');
   };
 
-  // Canvas teljes újrarajzolása
+  // --- SAJÁT SOKSZÖG LEZÁRÁSA ÉS LÉTREHOZÁSA ---
+  const finishCustomPolygon = () => {
+    if (polyPoints.length < 3) {
+      if (soundEnabled) speakText('Legalább 3 pont szükséges egy zárt alakzathoz!');
+      return;
+    }
+
+    // Centroid számítása
+    const avgX = polyPoints.reduce((sum, p) => sum + p.x, 0) / polyPoints.length;
+    const avgY = polyPoints.reduce((sum, p) => sum + p.y, 0) / polyPoints.length;
+
+    // Maximális távolság a középponttól (ez lesz a size)
+    let maxDist = 0;
+    polyPoints.forEach(p => {
+      const d = Math.hypot(p.x - avgX, p.y - avgY);
+      if (d > maxDist) maxDist = d;
+    });
+    maxDist = Math.max(30, maxDist);
+
+    // Relatív normált pontok (-1 és 1 között)
+    const normalizedPoints = polyPoints.map(p => ({
+      x: (p.x - avgX) / maxDist,
+      y: (p.y - avgY) / maxDist,
+    }));
+
+    const newShape: PlacedShape = {
+      id: Date.now().toString(),
+      type: 'custom',
+      x: Math.round(avgX),
+      y: Math.round(avgY),
+      size: Math.round(maxDist),
+      rotation: 0,
+      color: activeColor,
+      flipH: false,
+      flipV: false,
+      customPoints: normalizedPoints,
+    };
+
+    setShapes(prev => [...prev, newShape]);
+    setSelectedShapeId(newShape.id);
+    setPolyPoints([]);
+    setPolyCursor(null);
+    setTool('select');
+
+    if (soundEnabled) {
+      speakText('Saját alakzat elkészült! Most már szabadon mozgathatod, méretezheted és forgathatod!');
+    }
+  };
+
+  const cancelCustomPolygon = () => {
+    setPolyPoints([]);
+    setPolyCursor(null);
+    setTool('select');
+    if (soundEnabled) speakText('Sokszög készítés megszakítva');
+  };
+
+  // --- CANVAS TELJES ÚJRARAJZOLÁSA ---
   const renderCanvas = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -217,12 +347,26 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
       ctx.stroke();
     }
 
-    // 3. Szabadkézi ecsetréteg
+    // 3. Mágneses igazítási segédvonalak (Snap lines)
+    if (snapLines.length > 0) {
+      ctx.strokeStyle = '#06b6d4';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      snapLines.forEach(l => {
+        ctx.beginPath();
+        ctx.moveTo(l.x1, l.y1);
+        ctx.lineTo(l.x2, l.y2);
+        ctx.stroke();
+      });
+      ctx.setLineDash([]);
+    }
+
+    // 4. Szabadkézi ecsetréteg
     if (drawingLayerRef.current) {
       ctx.drawImage(drawingLayerRef.current, 0, 0);
     }
 
-    // 4. Húzott egyenes élek / vonalak (kocka élek)
+    // 5. Húzott egyenes élek / vonalak (kocka élek)
     lines.forEach(l => {
       ctx.strokeStyle = l.color;
       ctx.lineWidth = l.width;
@@ -245,7 +389,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
       ctx.setLineDash([]);
     }
 
-    // 5. Alakzatok kirajzolása forgatással és tükrözéssel
+    // 6. Alakzatok kirajzolása forgatással, tükrözéssel és méretezéssel
     shapes.forEach(shape => {
       ctx.save();
       ctx.translate(shape.x, shape.y);
@@ -256,48 +400,167 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
 
       drawShapeOnCtx(ctx, shape);
 
-      // Kijelölő keret és infó
+      // Kijelölő keret, fogantyúk és méret infó
       if (isSelected) {
-        ctx.restore(); // Visszaállunk a normál koordináta-rendszerbe a feliratokhoz
+        ctx.restore(); // Visszaállunk a normál koordináta-rendszerbe a feliratokhoz és sarkokhoz
         ctx.save();
         ctx.translate(shape.x, shape.y);
 
         ctx.strokeStyle = '#2563eb';
         ctx.lineWidth = 2;
         ctx.setLineDash([5, 5]);
-        const s = shape.size + 12;
+        const s = shape.size + 10;
         ctx.strokeRect(-s, -s, s * 2, s * 2);
         ctx.setLineDash([]);
 
-        // Forgatási fogantyú jelölő fent
+        // 4 Sarok méretező fogantyú (Resize Handles: NW, NE, SE, SW)
+        const handleCorners = [
+          { x: -s, y: -s },
+          { x: s, y: -s },
+          { x: s, y: s },
+          { x: -s, y: s }
+        ];
+
+        handleCorners.forEach(hc => {
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = '#2563eb';
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.arc(hc.x, hc.y, 6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        });
+
+        // Forgatási fogantyú fent
         ctx.fillStyle = '#2563eb';
         ctx.beginPath();
-        ctx.arc(0, -s - 10, 5, 0, Math.PI * 2);
+        ctx.arc(0, -s - 12, 5, 0, Math.PI * 2);
         ctx.fill();
 
-        // Információs címke: fok és tükrözés
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-        ctx.fillRect(-65, s + 6, 130, 22);
+        // Információs címke: méret, szög és tükrözés
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+        ctx.fillRect(-85, s + 6, 170, 24);
         ctx.fillStyle = '#ffffff';
-        ctx.font = '11px sans-serif';
+        ctx.font = 'bold 11px sans-serif';
         ctx.textAlign = 'center';
         const flipLabel = `${shape.flipH ? '↔' : ''}${shape.flipV ? '↕' : ''}` || 'Normál';
-        ctx.fillText(`${shape.rotation}° | ${flipLabel}`, 0, s + 21);
+        ctx.fillText(`Méret: ${Math.round(shape.size)}px | ${shape.rotation}° | ${flipLabel}`, 0, s + 22);
       }
 
       ctx.restore();
     });
+
+    // 7. Húzással alakzatkészítés előnézete (Rubber band)
+    if (tool === 'drawShape' && shapeDragStart && shapeDragCurrent) {
+      const dx = shapeDragCurrent.x - shapeDragStart.x;
+      const dy = shapeDragCurrent.y - shapeDragStart.y;
+      const dist = Math.hypot(dx, dy);
+
+      ctx.save();
+      ctx.strokeStyle = '#2563eb';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+
+      // Bounding box előnézet
+      const minX = Math.min(shapeDragStart.x, shapeDragCurrent.x);
+      const minY = Math.min(shapeDragStart.y, shapeDragCurrent.y);
+      const w = Math.abs(dx);
+      const h = Math.abs(dy);
+      ctx.strokeRect(minX, minY, w, h);
+
+      // Ideiglenes alakzat előnézete a középpontban
+      const cx = (shapeDragStart.x + shapeDragCurrent.x) / 2;
+      const cy = (shapeDragStart.y + shapeDragCurrent.y) / 2;
+      ctx.translate(cx, cy);
+
+      const previewShape: PlacedShape = {
+        id: 'preview',
+        type: activeDrawShapeType,
+        x: 0,
+        y: 0,
+        size: Math.max(15, dist / 2),
+        rotation: 0,
+        color: activeColor,
+      };
+
+      ctx.globalAlpha = 0.65;
+      drawShapeOnCtx(ctx, previewShape);
+      ctx.restore();
+    }
+
+    // 8. Saját sokszög készítő folyamatban lévő pontjai és vonalai
+    if (tool === 'customPoly') {
+      if (polyPoints.length > 0) {
+        ctx.strokeStyle = '#2563eb';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(polyPoints[0].x, polyPoints[0].y);
+        for (let i = 1; i < polyPoints.length; i++) {
+          ctx.lineTo(polyPoints[i].x, polyPoints[i].y);
+        }
+        if (polyCursor) {
+          ctx.lineTo(polyCursor.x, polyCursor.y);
+        }
+        ctx.stroke();
+
+        // Pontok kirajzolása sorszámmal
+        polyPoints.forEach((p, idx) => {
+          ctx.fillStyle = idx === 0 ? '#10b981' : '#2563eb';
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 10px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText((idx + 1).toString(), p.x, p.y);
+        });
+
+        // Ha a kurzor a kezdőpont közelében van, jelezzük a lezárást
+        if (polyCursor && polyPoints.length >= 3) {
+          const dToStart = Math.hypot(polyCursor.x - polyPoints[0].x, polyCursor.y - polyPoints[0].y);
+          if (dToStart < 20) {
+            ctx.fillStyle = 'rgba(16, 185, 129, 0.2)';
+            ctx.beginPath();
+            ctx.arc(polyPoints[0].x, polyPoints[0].y, 22, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+    }
   };
 
-  // Alakzatok pontos renderelése Canvasen
+  // --- ALAKZATOK GRAFIKUS KIRAJZOLÁSA ---
   const drawShapeOnCtx = (ctx: CanvasRenderingContext2D, shape: PlacedShape) => {
     const s = shape.size;
     const color = shape.color;
 
     ctx.lineWidth = 2.5;
     ctx.strokeStyle = '#0f172a';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
 
     switch (shape.type) {
+      case 'circle': {
+        // Szabályos kör
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(0, 0, s, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Középpont jelölő
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(0, 0, 3, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      }
+
       case 'triangle': {
         // Szabályos egyenlő oldalú háromszög
         ctx.fillStyle = color;
@@ -309,7 +572,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         ctx.fill();
         ctx.stroke();
 
-        // Kis középponti csúcs jelölő a pontos illesztéshez
+        // Középpont jelölő az illesztéshez
         ctx.fillStyle = '#ffffff';
         ctx.beginPath();
         ctx.arc(0, 0, 3, 0, Math.PI * 2);
@@ -317,8 +580,21 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         break;
       }
 
+      case 'rightTriangle': {
+        // Derékszögű háromszög
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(-s * 0.8, s * 0.8);
+        ctx.lineTo(s * 0.8, s * 0.8);
+        ctx.lineTo(-s * 0.8, -s * 0.8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+
       case 'square': {
-        // Négyzet (a 3D kocka alapeleme)
+        // Szabályos négyzet
         const half = s * 0.72;
         ctx.fillStyle = color;
         ctx.beginPath();
@@ -326,13 +602,70 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         ctx.fill();
         ctx.stroke();
 
-        // Átlós segédpontok a sarkokon a vonalillesztéshez
+        // Sarokpontok a vonalillesztéshez
         ctx.fillStyle = '#ffffff';
         [[-half, -half], [half, -half], [half, half], [-half, half]].forEach(([px, py]) => {
           ctx.beginPath();
           ctx.arc(px, py, 3, 0, Math.PI * 2);
           ctx.fill();
         });
+        break;
+      }
+
+      case 'rectangle': {
+        // Téglalap
+        const w = s * 0.95;
+        const h = s * 0.55;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.rect(-w, -h, w * 2, h * 2);
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+
+      case 'rhombus': {
+        // Rombusz (Gyémánt)
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(0, -s);
+        ctx.lineTo(s * 0.75, 0);
+        ctx.lineTo(0, s);
+        ctx.lineTo(-s * 0.75, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+
+      case 'trapezoid': {
+        // Szimmetrikus trapéz
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(-s * 0.5, -s * 0.6);
+        ctx.lineTo(s * 0.5, -s * 0.6);
+        ctx.lineTo(s * 0.9, s * 0.6);
+        ctx.lineTo(-s * 0.9, s * 0.6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+
+      case 'pentagon': {
+        // Szabályos ötszög
+        ctx.beginPath();
+        for (let i = 0; i < 5; i++) {
+          const angle = (i * 72 - 90) * (Math.PI / 180);
+          const x = s * Math.cos(angle);
+          const y = s * Math.sin(angle);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.stroke();
         break;
       }
 
@@ -351,7 +684,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         ctx.fill();
         ctx.stroke();
 
-        // Belső 6 háromszög találkozása (szeletvonalak)
+        // Belső 6 háromszög találkozási vonalai
         for (let i = 0; i < 6; i++) {
           const angle = (i * 60 - 30) * (Math.PI / 180);
           ctx.beginPath();
@@ -364,8 +697,69 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         break;
       }
 
+      case 'star': {
+        // 5 ágú csillag
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        const spikes = 5;
+        const outerRadius = s;
+        const innerRadius = s * 0.45;
+        let rot = (Math.PI / 2) * 3;
+        const step = Math.PI / spikes;
+
+        ctx.moveTo(0, -outerRadius);
+        for (let i = 0; i < spikes; i++) {
+          let x = Math.cos(rot) * outerRadius;
+          let y = Math.sin(rot) * outerRadius;
+          ctx.lineTo(x, y);
+          rot += step;
+
+          x = Math.cos(rot) * innerRadius;
+          y = Math.sin(rot) * innerRadius;
+          ctx.lineTo(x, y);
+          rot += step;
+        }
+        ctx.lineTo(0, -outerRadius);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+
+      case 'heart': {
+        // Szív alakzat
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        const topCurveHeight = s * 0.3;
+        ctx.moveTo(0, topCurveHeight);
+        ctx.bezierCurveTo(0, 0, -s * 0.8, -s * 0.5, -s * 0.8, -s * 0.1);
+        ctx.bezierCurveTo(-s * 0.8, s * 0.3, -s * 0.3, s * 0.6, 0, s * 0.9);
+        ctx.bezierCurveTo(s * 0.3, s * 0.6, s * 0.8, s * 0.3, s * 0.8, -s * 0.1);
+        ctx.bezierCurveTo(s * 0.8, -s * 0.5, 0, 0, 0, topCurveHeight);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        break;
+      }
+
+      case 'custom': {
+        // Egyedi zárt sokszög
+        if (shape.customPoints && shape.customPoints.length > 2) {
+          ctx.fillStyle = color;
+          ctx.beginPath();
+          ctx.moveTo(shape.customPoints[0].x * s, shape.customPoints[0].y * s);
+          for (let i = 1; i < shape.customPoints.length; i++) {
+            ctx.lineTo(shape.customPoints[i].x * s, shape.customPoints[i].y * s);
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        }
+        break;
+      }
+
       case 'cube': {
-        // 3D Kocka izometrikus ábrázolása árnyékolással
+        // 3D Kocka izometrikus ábrázolása
         const cos30 = Math.cos(Math.PI / 6);
         const sin30 = 0.5;
 
@@ -380,7 +774,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         const topLeftX = -s * cos30;
         const topLeftY = -s * sin30;
 
-        // Felső lap (Világos)
+        // Felső lap
         ctx.fillStyle = adjustBrightness(color, 45);
         ctx.beginPath();
         ctx.moveTo(0, 0);
@@ -391,7 +785,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         ctx.fill();
         ctx.stroke();
 
-        // Bal lap (Alapszín)
+        // Bal lap
         ctx.fillStyle = color;
         ctx.beginPath();
         ctx.moveTo(0, 0);
@@ -402,7 +796,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         ctx.fill();
         ctx.stroke();
 
-        // Jobb lap (Árnyékos)
+        // Jobb lap
         ctx.fillStyle = adjustBrightness(color, -45);
         ctx.beginPath();
         ctx.moveTo(0, 0);
@@ -435,7 +829,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         ctx.fill();
         ctx.stroke();
 
-        // Jobb lap (Sötétebb)
+        // Jobb lap
         ctx.fillStyle = adjustBrightness(color, -35);
         ctx.beginPath();
         ctx.moveTo(0, apexY);
@@ -474,7 +868,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
       }
 
       case 'sphere': {
-        // 3D Gömb árnyékolt színátmenettel
+        // 3D Gömb árnyékolással
         const grad = ctx.createRadialGradient(-s * 0.3, -s * 0.3, s * 0.08, 0, 0, s);
         grad.addColorStop(0, '#ffffff');
         grad.addColorStop(0.3, adjustBrightness(color, 30));
@@ -504,12 +898,12 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     return `#${((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1)}`;
   }
 
-  // Újrarajzolás
+  // Újrarajzolás változáskor
   useEffect(() => {
     renderCanvas();
-  }, [shapes, lines, selectedShapeId, tool, linePreview]);
+  }, [shapes, lines, selectedShapeId, tool, linePreview, shapeDragCurrent, polyPoints, polyCursor, snapLines]);
 
-  // Egér kezelése
+  // --- EGÉRKEZELÉS (MOUSE EVENTS) ---
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -518,6 +912,29 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     const mouseY = e.clientY - rect.top;
 
     if (tool === 'select') {
+      // 1. Megvizsgáljuk, hogy a kijelölt alakzat valamelyik méretező fogantyújára kattintott-e
+      if (selectedShape) {
+        const s = selectedShape.size + 10;
+        const handles: { handle: 'nw' | 'ne' | 'se' | 'sw'; hx: number; hy: number }[] = [
+          { handle: 'nw', hx: selectedShape.x - s, hy: selectedShape.y - s },
+          { handle: 'ne', hx: selectedShape.x + s, hy: selectedShape.y - s },
+          { handle: 'se', hx: selectedShape.x + s, hy: selectedShape.y + s },
+          { handle: 'sw', hx: selectedShape.x - s, hy: selectedShape.y + s },
+        ];
+
+        for (const h of handles) {
+          if (Math.hypot(mouseX - h.hx, mouseY - h.hy) <= 12) {
+            setIsResizing(true);
+            setResizeHandle(h.handle);
+            setInitialResizeDist(Math.hypot(mouseX - selectedShape.x, mouseY - selectedShape.y));
+            setInitialShapeSize(selectedShape.size);
+            if (soundEnabled) speakText('Méret változtatása húzással');
+            return;
+          }
+        }
+      }
+
+      // 2. Alakzat kijelölése és mozgatásának kezdete
       let found: PlacedShape | null = null;
       for (let i = shapes.length - 1; i >= 0; i--) {
         const s = shapes[i];
@@ -535,6 +952,28 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
       } else {
         setSelectedShapeId(null);
       }
+    } else if (tool === 'drawShape') {
+      // Húzással alakzatkészítés indul
+      const snapX = snapToGrid ? Math.round(mouseX / 20) * 20 : mouseX;
+      const snapY = snapToGrid ? Math.round(mouseY / 20) * 20 : mouseY;
+      setShapeDragStart({ x: snapX, y: snapY });
+      setShapeDragCurrent({ x: snapX, y: snapY });
+    } else if (tool === 'customPoly') {
+      // Pont lerakása a saját sokszöghöz
+      const snapX = snapToGrid ? Math.round(mouseX / 20) * 20 : mouseX;
+      const snapY = snapToGrid ? Math.round(mouseY / 20) * 20 : mouseY;
+
+      // Ha már van legalább 3 pont és a kezdőpont közelébe kattintunk: lezárás!
+      if (polyPoints.length >= 3) {
+        const dToStart = Math.hypot(snapX - polyPoints[0].x, snapY - polyPoints[0].y);
+        if (dToStart < 20) {
+          finishCustomPolygon();
+          return;
+        }
+      }
+
+      setPolyPoints(prev => [...prev, { x: snapX, y: snapY }]);
+      if (soundEnabled) speakText(`${polyPoints.length + 1}. pont rögzítve`);
     } else if (tool === 'line') {
       const snapX = snapToGrid ? Math.round(mouseX / 20) * 20 : mouseX;
       const snapY = snapToGrid ? Math.round(mouseY / 20) * 20 : mouseY;
@@ -554,27 +993,77 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
-    if (tool === 'select' && isDragging && selectedShapeId) {
-      let nextX = mouseX - dragOffset.x;
-      let nextY = mouseY - dragOffset.y;
+    if (tool === 'select') {
+      // Méretezés végrehajtása húzással
+      if (isResizing && selectedShape && initialResizeDist > 0) {
+        const currentDist = Math.hypot(mouseX - selectedShape.x, mouseY - selectedShape.y);
+        const scaleFactor = currentDist / initialResizeDist;
+        const newSize = Math.max(25, Math.min(240, Math.round(initialShapeSize * scaleFactor)));
 
-      if (snapToGrid) {
-        nextX = Math.round(nextX / 20) * 20;
-        nextY = Math.round(nextY / 20) * 20;
+        setShapes(prev =>
+          prev.map(s => (s.id === selectedShape.id ? { ...s, size: newSize } : s))
+        );
+        return;
       }
 
-      setShapes(prev =>
-        prev.map(s => {
-          if (s.id === selectedShapeId) {
-            return {
-              ...s,
-              x: Math.max(40, Math.min(canvas.width - 40, nextX)),
-              y: Math.max(40, Math.min(canvas.height - 40, nextY)),
-            };
+      // Mozgatás végrehajtása mágneses illesztéssel
+      if (isDragging && selectedShapeId) {
+        let nextX = mouseX - dragOffset.x;
+        let nextY = mouseY - dragOffset.y;
+
+        const newSnapLines: { x1: number; y1: number; x2: number; y2: number }[] = [];
+
+        // 1. Igazítás a többi alakzathoz (Mágneses alakzat-illesztés!)
+        const snapThreshold = 18;
+        shapes.forEach(other => {
+          if (other.id === selectedShapeId) return;
+
+          // X tengely szerinti igazítás (középpontok)
+          if (Math.abs(nextX - other.x) < snapThreshold) {
+            nextX = other.x;
+            newSnapLines.push({ x1: other.x, y1: 0, x2: other.x, y2: canvas.height });
           }
-          return s;
-        })
-      );
+
+          // Y tengely szerinti igazítás (középpontok)
+          if (Math.abs(nextY - other.y) < snapThreshold) {
+            nextY = other.y;
+            newSnapLines.push({ x1: 0, y1: other.y, x2: canvas.width, y2: other.y });
+          }
+
+          // Érintkező illesztés jobbra/balra
+          const touchDistX = other.size + (selectedShape?.size || 0);
+          if (Math.abs(nextX - (other.x + touchDistX)) < snapThreshold) {
+            nextX = other.x + touchDistX;
+          } else if (Math.abs(nextX - (other.x - touchDistX)) < snapThreshold) {
+            nextX = other.x - touchDistX;
+          }
+        });
+
+        // 2. Igazítás a 20px-es rácshoz, ha nincs alakzathoz illeszkedve
+        if (snapToGrid && newSnapLines.length === 0) {
+          nextX = Math.round(nextX / 20) * 20;
+          nextY = Math.round(nextY / 20) * 20;
+        }
+
+        setSnapLines(newSnapLines);
+
+        setShapes(prev =>
+          prev.map(s => {
+            if (s.id === selectedShapeId) {
+              return {
+                ...s,
+                x: Math.max(30, Math.min(canvas.width - 30, nextX)),
+                y: Math.max(30, Math.min(canvas.height - 30, nextY)),
+              };
+            }
+            return s;
+          })
+        );
+      }
+    } else if (tool === 'drawShape' && shapeDragStart) {
+      setShapeDragCurrent({ x: mouseX, y: mouseY });
+    } else if (tool === 'customPoly') {
+      setPolyCursor({ x: mouseX, y: mouseY });
     } else if (tool === 'line' && lineStart) {
       const snapX = snapToGrid ? Math.round(mouseX / 20) * 20 : mouseX;
       const snapY = snapToGrid ? Math.round(mouseY / 20) * 20 : mouseY;
@@ -586,6 +1075,43 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
   };
 
   const handleMouseUp = () => {
+    // 1. Alakzat rajzolás húzással befejezése
+    if (tool === 'drawShape' && shapeDragStart && shapeDragCurrent) {
+      const dx = shapeDragCurrent.x - shapeDragStart.x;
+      const dy = shapeDragCurrent.y - shapeDragStart.y;
+      const dist = Math.hypot(dx, dy);
+
+      if (dist >= 15) {
+        const cx = Math.round((shapeDragStart.x + shapeDragCurrent.x) / 2);
+        const cy = Math.round((shapeDragStart.y + shapeDragCurrent.y) / 2);
+        const newShapeSize = Math.max(25, Math.min(220, Math.round(dist / 2)));
+
+        const newShape: PlacedShape = {
+          id: Date.now().toString(),
+          type: activeDrawShapeType,
+          x: cx,
+          y: cy,
+          size: newShapeSize,
+          rotation: 0,
+          color: activeColor,
+          flipH: false,
+          flipV: false,
+        };
+
+        setShapes(prev => [...prev, newShape]);
+        setSelectedShapeId(newShape.id);
+        setTool('select');
+
+        if (soundEnabled) {
+          speakText('Új alakzat sikeresen megrajzolva!');
+        }
+      }
+
+      setShapeDragStart(null);
+      setShapeDragCurrent(null);
+    }
+
+    // 2. Vonal befejezése
     if (tool === 'line' && lineStart && linePreview) {
       const dist = Math.hypot(linePreview.x - lineStart.x, linePreview.y - lineStart.y);
       if (dist > 8) {
@@ -606,8 +1132,11 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     }
 
     setIsDragging(false);
+    setIsResizing(false);
+    setResizeHandle(null);
     setIsDrawing(false);
     setLastDrawPos(null);
+    setSnapLines([]);
   };
 
   const drawFreehand = (x1: number, y1: number, x2: number, y2: number) => {
@@ -645,6 +1174,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     }
     setShapes([]);
     setLines([]);
+    setPolyPoints([]);
     setSelectedShapeId(null);
     renderCanvas();
     if (soundEnabled) speakText('Vászon kiürítve');
@@ -664,11 +1194,12 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
 
   return (
     <div className="content-card">
+      {/* Fejléc és BMP mentés gomb */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
         <div>
-          <h2>Alakzat Műhely: Tükrözés, Forgatás & BMP Mentés</h2>
+          <h2>Alakzat Műhely: Szabad Alakzatkészítés & Méretezés</h2>
           <p style={{ color: 'var(--text-muted)' }}>
-            Építs hatszöget háromszögekből vagy kockát négyzetekből tükrözéssel és forgatással, majd mentsd el <strong>.BMP</strong> fájlként!
+            Mozgasd az alakzatokat egérrel, változtasd meg a méretüket, és készíts szabadon kört, háromszöget, négyszöget vagy saját sokszöget!
           </p>
         </div>
 
@@ -684,36 +1215,77 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         </button>
       </div>
 
-      {/* Alakzat hozzáadó sáv */}
-      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', background: 'var(--bg-surface)', padding: '12px', borderRadius: '12px', border: '1px solid var(--bg-card-border)' }}>
-        <span style={{ fontSize: '0.92rem', fontWeight: 700, alignSelf: 'center', marginRight: '6px' }}>
-          Új alapalakzat:
-        </span>
+      {/* 1. SZABAD ALAKZATOK HOZZÁADÁSA TETSZŐLEGES TÍPUSSAL */}
+      <div style={{ 
+        display: 'flex', 
+        flexDirection: 'column', 
+        gap: '8px', 
+        background: 'var(--bg-surface)', 
+        padding: '12px', 
+        borderRadius: '12px', 
+        border: '1px solid var(--bg-card-border)' 
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
+          <span style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--primary)' }}>
+            ✨ Válassz vagy rajzolj tetszőleges alakzatot:
+          </span>
+          <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+            Kattints a hozzáadáshoz, vagy válaszd az "Egérrel Húzás" / "Saját Sokszög" eszközt!
+          </span>
+        </div>
 
-        <button type="button" className="btn-secondary" onClick={() => addShape('triangle')}>
-          <span>🔺 Háromszög</span>
-        </button>
-        <button type="button" className="btn-secondary" onClick={() => addShape('square')}>
-          <span>🟦 Négyzet (Kockához)</span>
-        </button>
-        <button type="button" className="btn-secondary" onClick={() => addShape('hexagon')}>
-          <span>🛑 Hatszög</span>
-        </button>
-        <button type="button" className="btn-secondary" onClick={() => addShape('cube')}>
-          <span>📦 3D Kocka</span>
-        </button>
-        <button type="button" className="btn-secondary" onClick={() => addShape('pyramid')}>
-          <span>🔺 3D Gúla</span>
-        </button>
-        <button type="button" className="btn-secondary" onClick={() => addShape('cylinder')}>
-          <span>🛢️ 3D Henger</span>
-        </button>
-        <button type="button" className="btn-secondary" onClick={() => addShape('sphere')}>
-          <span>🔮 3D Gömb</span>
-        </button>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('circle')}>
+            <CircleIcon size={18} color="#ef4444" />
+            <span>Kör</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('triangle')}>
+            <TriangleIcon size={18} color="#3b82f6" />
+            <span>Háromszög</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('rightTriangle')}>
+            <span>📐 Derékszögű</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('square')}>
+            <Square size={18} color="#10b981" />
+            <span>Négyzet</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('rectangle')}>
+            <span>🟩 Téglalap</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('rhombus')}>
+            <span>🔶 Rombusz</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('trapezoid')}>
+            <span>📐 Trapéz</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('pentagon')}>
+            <span>🛑 Ötszög</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('hexagon')}>
+            <HexagonIcon size={18} color="#8b5cf6" />
+            <span>Hatszög</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('star')}>
+            <StarIcon size={18} color="#f59e0b" />
+            <span>Csillag</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('cube')}>
+            <span>📦 3D Kocka</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('pyramid')}>
+            <span>🔺 3D Gúla</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('cylinder')}>
+            <span>🛢️ 3D Henger</span>
+          </button>
+          <button type="button" className="shape-chip-btn" onClick={() => addShape('sphere')}>
+            <span>🔮 3D Gömb</span>
+          </button>
+        </div>
       </div>
 
-      {/* TÜKRÖZÉS ÉS FORGATÁS MŰVELETI SÁV (Kiemelt SNI vezérlők) */}
+      {/* 2. KIJELÖLT ALAKZAT VEZÉRLŐI (MÉRETEZÉS, FORGATÁS, TÜKRÖZÉS) */}
       {selectedShape && tool === 'select' && (
         <div style={{ 
           background: 'linear-gradient(135deg, var(--primary-light) 0%, #eff6ff 100%)', 
@@ -722,12 +1294,13 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
           border: '2px solid var(--primary)',
           display: 'flex',
           flexDirection: 'column',
-          gap: '10px'
+          gap: '12px'
         }}>
+          {/* Felső sor: Státusz és műveletek */}
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--primary)' }}>
-                Kijelölt alakzat műveletei:
+                Kijelölt alakzat beállításai:
               </span>
               <span style={{ 
                 background: 'white', 
@@ -737,7 +1310,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
                 fontWeight: 700,
                 border: '1px solid #bfdbfe'
               }}>
-                Szög: {selectedShape.rotation}° | Tükrözés: {selectedShape.flipH ? '↔ Vízszintes ' : ''}{selectedShape.flipV ? '↕ Függőleges' : ''}{!selectedShape.flipH && !selectedShape.flipV ? 'Nincs' : ''}
+                Méret: {Math.round(selectedShape.size)}px | Szög: {selectedShape.rotation}° | {selectedShape.flipH ? '↔ Vízszintes ' : ''}{selectedShape.flipV ? '↕ Függőleges' : ''}{!selectedShape.flipH && !selectedShape.flipV ? 'Normál' : ''}
               </span>
             </div>
 
@@ -747,7 +1320,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
                 type="button"
                 className="btn-primary"
                 onClick={duplicateSelected}
-                title="Pontos másolat készítése (Ctrl+C / Beillesztés)"
+                title="Pontos másolat készítése"
                 style={{ padding: '8px 14px', fontSize: '0.9rem' }}
               >
                 <Copy size={17} />
@@ -767,8 +1340,89 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
             </div>
           </div>
 
+          {/* Középső sor: MÉRETVEZÉRLŐK (Alakzatok méretének változtatása!) */}
+          <div style={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: '12px', 
+            background: 'white', 
+            padding: '10px 14px', 
+            borderRadius: '10px', 
+            border: '1px solid #bfdbfe',
+            flexWrap: 'wrap'
+          }}>
+            <span style={{ fontSize: '0.95rem', fontWeight: 800, color: '#1e3a8a', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <Maximize2 size={18} />
+              Alakzat Mérete:
+            </span>
+
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => changeSelectedSize(-15)}
+              style={{ padding: '6px 12px', fontSize: '0.88rem' }}
+              title="Kisebb méret"
+            >
+              <Minimize2 size={16} />
+              <span>− Kisebb</span>
+            </button>
+
+            {/* Méret csúszka */}
+            <input
+              type="range"
+              min="25"
+              max="240"
+              step="5"
+              value={selectedShape.size}
+              onChange={e => setSelectedSizeDirect(Number(e.target.value))}
+              className="custom-slider"
+              style={{ width: '160px' }}
+              title={`Méret: ${Math.round(selectedShape.size)}px`}
+            />
+
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => changeSelectedSize(15)}
+              style={{ padding: '6px 12px', fontSize: '0.88rem' }}
+              title="Nagyobb méret"
+            >
+              <Maximize2 size={16} />
+              <span>+ Nagyobb</span>
+            </button>
+
+            {/* Gyorsméret chipek */}
+            <div style={{ display: 'flex', gap: '6px', marginLeft: 'auto', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Gyors:</span>
+              <button 
+                type="button" 
+                className="btn-secondary" 
+                onClick={() => setSelectedSizeDirect(45)}
+                style={{ padding: '4px 8px', fontSize: '0.82rem' }}
+              >
+                Kicsi (45px)
+              </button>
+              <button 
+                type="button" 
+                className="btn-secondary" 
+                onClick={() => setSelectedSizeDirect(75)}
+                style={{ padding: '4px 8px', fontSize: '0.82rem' }}
+              >
+                Közepes (75px)
+              </button>
+              <button 
+                type="button" 
+                className="btn-secondary" 
+                onClick={() => setSelectedSizeDirect(125)}
+                style={{ padding: '4px 8px', fontSize: '0.82rem' }}
+              >
+                Nagy (125px)
+              </button>
+            </div>
+          </div>
+
+          {/* Alsó sor: TÜKRÖZÉS ÉS FORGATÁS */}
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-            {/* Tükrözés gombok */}
             <span style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-muted)' }}>Tükrözés:</span>
             
             <button
@@ -795,7 +1449,6 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
 
             <div style={{ width: '1px', height: '24px', background: '#cbd5e1', margin: '0 4px' }} />
 
-            {/* Forgatás gombok */}
             <span style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-muted)' }}>Forgatás:</span>
 
             <button
@@ -806,7 +1459,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
               style={{ padding: '8px 12px', fontSize: '0.9rem' }}
             >
               <RotateCcw size={17} />
-              <span>-60° (Hatszög)</span>
+              <span>-60°</span>
             </button>
 
             <button
@@ -817,7 +1470,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
               style={{ padding: '8px 12px', fontSize: '0.9rem' }}
             >
               <RotateCw size={17} />
-              <span>+60° (Hatszög)</span>
+              <span>+60°</span>
             </button>
 
             <button
@@ -831,17 +1484,6 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
               <span>+90°</span>
             </button>
 
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => rotateSelected(180)}
-              title="Teljes 180 fokos megfordítás"
-              style={{ padding: '8px 12px', fontSize: '0.9rem' }}
-            >
-              <RotateCw size={17} />
-              <span>180° Fordítás</span>
-            </button>
-
             {/* Finom forgató csúszka */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginLeft: 'auto' }}>
               <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 600 }}>Finom szög:</span>
@@ -852,7 +1494,8 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
                 step="5"
                 value={selectedShape.rotation}
                 onChange={e => setRotationDirect(Number(e.target.value))}
-                style={{ width: '110px', cursor: 'pointer' }}
+                className="custom-slider"
+                style={{ width: '110px' }}
                 title={`Forgatás: ${selectedShape.rotation}°`}
               />
             </div>
@@ -860,40 +1503,78 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         </div>
       )}
 
-      {/* Paint Szerszámok, Vonal eszköz, Színek és Rács */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', background: 'var(--bg-surface)', padding: '10px 16px', borderRadius: '12px', border: '1px solid var(--bg-card-border)' }}>
-        {/* Eszközválasztó */}
+      {/* 3. ESZKÖZTÁR: MOZGATÁS, ALAKZAT HÚZÁS, SAJÁT SOKSZÖG, ECSET ÉS SZÍNEK */}
+      <div style={{ 
+        display: 'flex', 
+        justifyContent: 'space-between', 
+        alignItems: 'center', 
+        flexWrap: 'wrap', 
+        gap: '12px', 
+        background: 'var(--bg-surface)', 
+        padding: '10px 16px', 
+        borderRadius: '12px', 
+        border: '1px solid var(--bg-card-border)' 
+      }}>
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Mozgatás & Méretezés eszköz */}
           <button
             type="button"
             className={tool === 'select' ? 'btn-primary' : 'btn-secondary'}
             onClick={() => setTool('select')}
-            title="Alakzatok mozgatása és kijelölése"
+            title="Alakzatok mozgatása egérrel, kijelölése és méretezése a sarkoknál"
           >
             <MousePointer size={18} />
-            <span>Mozgatás</span>
+            <span>Egér Mozgatás & Méretezés</span>
           </button>
 
+          {/* Húzással rajzolás eszköz (Paint stílus) */}
+          <button
+            type="button"
+            className={tool === 'drawShape' ? 'btn-primary' : 'btn-secondary'}
+            onClick={() => setTool('drawShape')}
+            title="Kattints a vászonra és húzd az egeret a kívánt méretű alakzathoz!"
+          >
+            <Maximize2 size={18} />
+            <span>Alakzat Húzása Egérrel</span>
+          </button>
+
+          {/* Saját sokszög eszköz */}
+          <button
+            type="button"
+            className={tool === 'customPoly' ? 'btn-primary' : 'btn-secondary'}
+            onClick={() => {
+              setTool('customPoly');
+              setPolyPoints([]);
+            }}
+            title="Kattints pontokat a vásznon és hozz létre egyedi sokszöget!"
+          >
+            <PenTool size={18} />
+            <span>Saját Sokszög Készítő</span>
+          </button>
+
+          {/* Élösszekötő Vonal */}
           <button
             type="button"
             className={tool === 'line' ? 'btn-primary' : 'btn-secondary'}
             onClick={() => setTool('line')}
-            title="Élek összekötése vonallal (Kockához!)"
+            title="Élek összekötése egyenessel (Kockához!)"
           >
             <Slash size={18} />
-            <span>Élösszekötő Vonal</span>
+            <span>Vonal</span>
           </button>
 
+          {/* Ecset */}
           <button
             type="button"
             className={tool === 'brush' ? 'btn-primary' : 'btn-secondary'}
             onClick={() => setTool('brush')}
-            title="Szabadkézi ceruza és ecset"
+            title="Szabadkézi ecset"
           >
             <Paintbrush size={18} />
             <span>Ecset</span>
           </button>
 
+          {/* Radír */}
           <button
             type="button"
             className={tool === 'eraser' ? 'btn-primary' : 'btn-secondary'}
@@ -905,26 +1586,26 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
           </button>
         </div>
 
-        {/* Mágneses rács kapcsoló (SNI finommotorika támogatás) */}
+        {/* Mágneses illesztés és rács (SNI illesztés segítő) */}
         <button
           type="button"
           className={snapToGrid ? 'btn-accent' : 'btn-secondary'}
           onClick={() => {
             const next = !snapToGrid;
             setSnapToGrid(next);
-            if (soundEnabled) speakText(next ? 'Mágneses rácshoz igazítás bekapcsolva' : 'Szabad mozgatás');
+            if (soundEnabled) speakText(next ? 'Mágneses alakzat-illesztés bekapcsolva' : 'Szabad mozgatás');
           }}
-          title="Segít a sarkok és élek pontos illesztésében"
+          title="Mágnesesen összekapcsolja az alakzatok éleit és sarkait egymással"
           style={{ padding: '8px 14px', fontSize: '0.88rem' }}
         >
           <Magnet size={18} />
-          <span>{snapToGrid ? 'Mágneses rács: BE' : 'Mágneses rács: KI'}</span>
+          <span>{snapToGrid ? 'Mágneses illesztés: BE' : 'Mágneses illesztés: KI'}</span>
         </button>
 
         {/* Színpaletta */}
         <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
           <span style={{ fontSize: '0.88rem', color: 'var(--text-muted)' }}>Szín:</span>
-          {['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#0f172a'].map(c => (
+          {['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899', '#0f172a'].map(c => (
             <button
               key={c}
               type="button"
@@ -949,7 +1630,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
           ))}
         </div>
 
-        {/* Vászon ürítése */}
+        {/* Ürítés */}
         <button
           type="button"
           className="btn-secondary"
@@ -962,7 +1643,101 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         </button>
       </div>
 
-      {/* RAJZVÁSZON (Canvas) */}
+      {/* HA ALAKZAT HÚZÁS MÓD VAN: VÁLASZTHATÓ ALAKZATTÍPUS SÁV */}
+      {tool === 'drawShape' && (
+        <div style={{ 
+          background: 'linear-gradient(90deg, #eff6ff 0%, #ffffff 100%)', 
+          padding: '10px 16px', 
+          borderRadius: '10px', 
+          border: '2px dashed var(--primary)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '8px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 800, color: 'var(--primary)' }}>Rajzolandó alakzat:</span>
+            {(['circle', 'triangle', 'square', 'rectangle', 'hexagon', 'star'] as ShapeType[]).map(st => {
+              const names: Record<string, string> = {
+                circle: 'Kör',
+                triangle: 'Háromszög',
+                square: 'Négyzet',
+                rectangle: 'Téglalap',
+                hexagon: 'Hatszög',
+                star: 'Csillag'
+              };
+              return (
+                <button
+                  key={st}
+                  type="button"
+                  className={`btn-secondary ${activeDrawShapeType === st ? 'btn-primary' : ''}`}
+                  onClick={() => setActiveDrawShapeType(st)}
+                  style={{ padding: '6px 12px', fontSize: '0.88rem' }}
+                >
+                  <span>{names[st]}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <span style={{ fontSize: '0.88rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+            🖱️ Kattints a vászonra, és tartsd lenyomva az egeret a kívánt méretig!
+          </span>
+        </div>
+      )}
+
+      {/* HA SAJÁT SOKSZÖG MÓD VAN: PONTVEZÉRLŐ ÉS LEZÁRÓ GOMB */}
+      {tool === 'customPoly' && (
+        <div style={{ 
+          background: 'linear-gradient(90deg, #ecfdf5 0%, #ffffff 100%)', 
+          padding: '10px 16px', 
+          borderRadius: '10px', 
+          border: '2px solid #10b981',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '8px'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontWeight: 800, color: '#047857' }}>
+              📐 Saját sokszög rajzolása:
+            </span>
+            <span style={{ background: 'white', padding: '4px 10px', borderRadius: '8px', fontWeight: 700, border: '1px solid #a7f3d0' }}>
+              Rögzített pontok száma: {polyPoints.length}
+            </span>
+            <span style={{ fontSize: '0.88rem', color: 'var(--text-muted)' }}>
+              (Kattints a csúcsok lerakásához!)
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              type="button"
+              className="btn-success"
+              onClick={finishCustomPolygon}
+              disabled={polyPoints.length < 3}
+              style={{ padding: '8px 16px', fontWeight: 800 }}
+            >
+              <Check size={18} />
+              <span>Alakzat Lezárása & Létrehozása</span>
+            </button>
+
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={cancelCustomPolygon}
+              style={{ padding: '8px 12px' }}
+            >
+              <X size={18} />
+              <span>Mégse</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 4. RAJZVÁSZON (CANVAS) */}
       <div className="paint-window-frame" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
         <canvas
           ref={canvasRef}
@@ -977,27 +1752,35 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
             height: 'auto',
             borderRadius: '8px',
             boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-            cursor: tool === 'select' ? (isDragging ? 'grabbing' : 'grab') : (tool === 'line' ? 'crosshair' : 'default'),
+            cursor: tool === 'select' ? (isResizing ? (resizeHandle === 'nw' || resizeHandle === 'se' ? 'nwse-resize' : 'nesw-resize') : (isDragging ? 'grabbing' : 'grab')) : (tool === 'drawShape' || tool === 'customPoly' || tool === 'line' ? 'crosshair' : 'default'),
             background: '#ffffff',
             touchAction: 'none'
           }}
         />
 
-        {tool === 'line' && (
+        {tool === 'select' && (
           <div style={{ marginTop: '8px', fontSize: '0.88rem', color: 'var(--primary)', fontWeight: 700 }}>
-            📏 <strong>Élösszekötő mód:</strong> Kattints egy sarokra, tartsd nyomva az egeret és húzd át a szemközti sarokra a kocka éleihez!
+            💡 <strong>Mozgatás és méretezés:</strong> Fogd meg az alakzatot a mozgatáshoz, vagy ragadd meg a kijelölő keret <strong>4 sarkát (fogantyúit)</strong> a méretének növeléséhez vagy csökkentéséhez!
+          </div>
+        )}
+
+        {tool === 'drawShape' && (
+          <div style={{ marginTop: '8px', fontSize: '0.88rem', color: 'var(--primary)', fontWeight: 700 }}>
+            📏 <strong>Húzással alakzatkészítés:</strong> Kattints és húzd az egeret, mint az igazi Paintben! Amikor felengeded, kész a választott alakzat!
           </div>
         )}
       </div>
 
-      {/* Hasznos trükkök SNI diákoknak */}
+      {/* Segítség és trükkök */}
       <div className="step-subtext" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
         <span>
-          💡 <strong>Hogyan készíts Hatszöget és Kockát?</strong>
+          💡 <strong>Hasznos tudnivalók:</strong>
           <br />
-          • <strong>Hatszög:</strong> Kattints a háromszögre ➔ Nyomd meg a <strong>Másolás</strong> gombot ➔ Forgasd el <strong>+60°</strong>-kal ➔ Illeszd a csúcsokat egymás mellé!
+          • <strong>Alakzatok illesztése:</strong> A bekapcsolt mágneses illesztéssel az alakzatok automatikusan egymás éleihez és sarkaihoz ugranak.
           <br />
-          • <strong>Kocka:</strong> Helyezz el egy négyzetet ➔ Másold le és told el átlósan ➔ Használd az <strong>Élösszekötő Vonal</strong> eszközt a 4 sarok összekötéséhez!
+          • <strong>Méretváltoztatás:</strong> Használd a <strong>+ Nagyobb / − Kisebb</strong> gombokat, a csúszkát, vagy húzd közvetlenül a sarok fogantyúkat az egérrel!
+          <br />
+          • <strong>Saját alakzatok:</strong> Kattints a <strong>Saját Sokszög Készítő</strong> gombra, kattints le tetszőleges számú pontot, és zárd le a formát!
         </span>
       </div>
     </div>
