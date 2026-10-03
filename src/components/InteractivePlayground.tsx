@@ -113,6 +113,7 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
   const [freeDragOffset, setFreeDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [freeActiveColor, setFreeActiveColor] = useState<string>('#3b82f6');
   const [freeSnapGuides, setFreeSnapGuides] = useState<{ x1: number; y1: number; x2: number; y2: number }[]>([]);
+  const [freeSnapEnabled, setFreeSnapEnabled] = useState<boolean>(true);
 
   // Shift billentyű figyelése nevezetes szögekhez
   React.useEffect(() => {
@@ -659,31 +660,33 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
         let nextY = coords.y - freeDragOffset.y;
 
         const guides: { x1: number; y1: number; x2: number; y2: number }[] = [];
-        const snapThreshold = 18;
 
-        // Mágneses alakzat-illesztés a többi szabad alakzathoz
-        freeShapes.forEach(other => {
-          if (other.id === selectedFreeShapeId) return;
+        // Mágneses alakzat-illesztés csak akkor, ha be van kapcsolva!
+        if (freeSnapEnabled) {
+          const snapThreshold = 18;
+          freeShapes.forEach(other => {
+            if (other.id === selectedFreeShapeId) return;
 
-          // X igazítás
-          if (Math.abs(nextX - other.x) < snapThreshold) {
-            nextX = other.x;
-            guides.push({ x1: other.x, y1: 0, x2: other.x, y2: 360 });
-          }
-          // Y igazítás
-          if (Math.abs(nextY - other.y) < snapThreshold) {
-            nextY = other.y;
-            guides.push({ x1: 0, y1: other.y, x2: 520, y2: other.y });
-          }
+            // X igazítás
+            if (Math.abs(nextX - other.x) < snapThreshold) {
+              nextX = other.x;
+              guides.push({ x1: other.x, y1: 0, x2: other.x, y2: 360 });
+            }
+            // Y igazítás
+            if (Math.abs(nextY - other.y) < snapThreshold) {
+              nextY = other.y;
+              guides.push({ x1: 0, y1: other.y, x2: 520, y2: other.y });
+            }
 
-          // Érintkező illesztés (pl. négyzet a négyzethez, háromszög a négyzethez)
-          const touchDist = other.size + (selectedFreeShape?.size || 0);
-          if (Math.abs(nextX - (other.x + touchDist)) < snapThreshold) {
-            nextX = other.x + touchDist;
-          } else if (Math.abs(nextX - (other.x - touchDist)) < snapThreshold) {
-            nextX = other.x - touchDist;
-          }
-        });
+            // Érintkező illesztés (pl. négyzet a négyzethez, háromszög a négyzethez)
+            const touchDist = other.size + (selectedFreeShape?.size || 0);
+            if (Math.abs(nextX - (other.x + touchDist)) < snapThreshold) {
+              nextX = other.x + touchDist;
+            } else if (Math.abs(nextX - (other.x - touchDist)) < snapThreshold) {
+              nextX = other.x - touchDist;
+            }
+          });
+        }
 
         setFreeSnapGuides(guides);
 
@@ -1577,6 +1580,25 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
                   />
                 ))}
               </div>
+
+              {/* Mágneses illesztés kapcsoló */}
+              <button
+                type="button"
+                className={freeSnapEnabled ? 'btn-accent' : 'btn-secondary'}
+                onClick={() => {
+                  const next = !freeSnapEnabled;
+                  setFreeSnapEnabled(next);
+                  if (!next) setFreeSnapGuides([]);
+                  if (soundEnabled) {
+                    speakText(next ? 'Mágneses illesztés bekapcsolva' : 'Mágneses illesztés kikapcsolva, szabad mozgatás');
+                  }
+                }}
+                style={{ padding: '6px 12px', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '6px' }}
+                title="Mágnesesen összekapcsolja az alakzatokat egymáshoz érve"
+              >
+                <Magnet size={16} />
+                <span>{freeSnapEnabled ? 'Mágnes: BE' : 'Mágnes: KI'}</span>
+              </button>
             </div>
           </div>
 

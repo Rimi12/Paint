@@ -1394,36 +1394,39 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
 
         const newSnapLines: { x1: number; y1: number; x2: number; y2: number }[] = [];
 
-        // Igazítás a többi alakzathoz (Mágneses alakzat-illesztés!)
-        const snapThreshold = 18;
-        shapes.forEach(other => {
-          if (other.id === selectedShapeId) return;
+        // Csak akkor illesztünk, ha a mágneses illesztés BE van kapcsolva!
+        if (snapToGrid) {
+          // Igazítás a többi alakzathoz (Mágneses alakzat-illesztés!)
+          const snapThreshold = 18;
+          shapes.forEach(other => {
+            if (other.id === selectedShapeId) return;
 
-          // X tengely szerinti igazítás (középpontok)
-          if (Math.abs(nextX - other.x) < snapThreshold) {
-            nextX = other.x;
-            newSnapLines.push({ x1: other.x, y1: 0, x2: other.x, y2: canvas.height });
+            // X tengely szerinti igazítás (középpontok)
+            if (Math.abs(nextX - other.x) < snapThreshold) {
+              nextX = other.x;
+              newSnapLines.push({ x1: other.x, y1: 0, x2: other.x, y2: canvas.height });
+            }
+
+            // Y tengely szerinti igazítás (középpontok)
+            if (Math.abs(nextY - other.y) < snapThreshold) {
+              nextY = other.y;
+              newSnapLines.push({ x1: 0, y1: other.y, x2: canvas.width, y2: other.y });
+            }
+
+            // Érintkező illesztés jobbra/balra
+            const touchDistX = other.size + (selectedShape?.size || 0);
+            if (Math.abs(nextX - (other.x + touchDistX)) < snapThreshold) {
+              nextX = other.x + touchDistX;
+            } else if (Math.abs(nextX - (other.x - touchDistX)) < snapThreshold) {
+              nextX = other.x - touchDistX;
+            }
+          });
+
+          // Igazítás a 20px-es rácshoz, ha nincs alakzathoz illeszkedve
+          if (newSnapLines.length === 0) {
+            nextX = Math.round(nextX / 20) * 20;
+            nextY = Math.round(nextY / 20) * 20;
           }
-
-          // Y tengely szerinti igazítás (középpontok)
-          if (Math.abs(nextY - other.y) < snapThreshold) {
-            nextY = other.y;
-            newSnapLines.push({ x1: 0, y1: other.y, x2: canvas.width, y2: other.y });
-          }
-
-          // Érintkező illesztés jobbra/balra
-          const touchDistX = other.size + (selectedShape?.size || 0);
-          if (Math.abs(nextX - (other.x + touchDistX)) < snapThreshold) {
-            nextX = other.x + touchDistX;
-          } else if (Math.abs(nextX - (other.x - touchDistX)) < snapThreshold) {
-            nextX = other.x - touchDistX;
-          }
-        });
-
-        // Igazítás a 20px-es rácshoz, ha nincs alakzathoz illeszkedve
-        if (snapToGrid && newSnapLines.length === 0) {
-          nextX = Math.round(nextX / 20) * 20;
-          nextY = Math.round(nextY / 20) * 20;
         }
 
         setSnapLines(newSnapLines);
@@ -2081,7 +2084,10 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
           onClick={() => {
             const next = !snapToGrid;
             setSnapToGrid(next);
-            if (soundEnabled) speakText(next ? 'Mágneses alakzat-illesztés bekapcsolva' : 'Szabad mozgatás');
+            if (!next) {
+              setSnapLines([]);
+            }
+            if (soundEnabled) speakText(next ? 'Mágneses alakzat-illesztés bekapcsolva' : 'Mágneses illesztés kikapcsolva, szabad mozgatás');
           }}
           title="Mágnesesen összekapcsolja az alakzatok éleit és sarkait egymással"
           style={{ padding: '8px 14px', fontSize: '0.88rem' }}
