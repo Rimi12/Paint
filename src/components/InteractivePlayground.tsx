@@ -103,9 +103,27 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
   ]);
   const [selectedFreeShapeId, setSelectedFreeShapeId] = useState<string | null>('f1');
   const [isDraggingFreeShape, setIsDraggingFreeShape] = useState<boolean>(false);
+  const [isRotatingFreeShape, setIsRotatingFreeShape] = useState<boolean>(false);
+  const [isShiftActive, setIsShiftActive] = useState<boolean>(false);
   const [freeDragOffset, setFreeDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [freeActiveColor, setFreeActiveColor] = useState<string>('#3b82f6');
   const [freeSnapGuides, setFreeSnapGuides] = useState<{ x1: number; y1: number; x2: number; y2: number }[]>([]);
+
+  // Shift billentyű figyelése nevezetes szögekhez
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setIsShiftActive(true);
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setIsShiftActive(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
 
   const svgRef = useRef<SVGSVGElement | null>(null);
 
@@ -472,7 +490,27 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
         }
       }
     } else if (subMode === 'free') {
-      // Szabad alakzat kijelölése és mozgatása
+      // 1. Megvizsgáljuk, hogy a kiválasztott alakzat forgatási fogantyújára kattintott-e a tanuló
+      if (selectedFreeShape) {
+        const sz = selectedFreeShape.size;
+        const rotRad = (selectedFreeShape.rotation * Math.PI) / 180;
+        const dx = coords.x - selectedFreeShape.x;
+        const dy = coords.y - selectedFreeShape.y;
+        const localX = dx * Math.cos(-rotRad) - dy * Math.sin(-rotRad);
+        const localY = dx * Math.sin(-rotRad) + dy * Math.cos(-rotRad);
+
+        // Forgatási fogantyú felső pontja: (0, -sz - 24)
+        if (Math.hypot(localX - 0, localY - (-sz - 24)) <= 18) {
+          setIsRotatingFreeShape(true);
+          (e.target as Element).setPointerCapture?.(e.pointerId);
+          if (soundEnabled) {
+            speakText('Forgatás egérrel. 2 fokonként forog, a Shift gombbal 15 fokos nevezetes szögekre ugrik!');
+          }
+          return;
+        }
+      }
+
+      // 2. Szabad alakzat kijelölése és mozgatása
       let found: FreeShapeItem | null = null;
       for (let i = freeShapes.length - 1; i >= 0; i--) {
         const s = freeShapes[i];
@@ -538,46 +576,71 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
       } else {
         setHoveredPuzzleSlot(null);
       }
-    } else if (subMode === 'free' && isDraggingFreeShape && selectedFreeShapeId) {
-      let nextX = coords.x - freeDragOffset.x;
-      let nextY = coords.y - freeDragOffset.y;
+    } else if (subMode === 'free') {
+      // 1. FORGATÁS VÉGREHAJTÁSA EGÉRREL (Paint stílus)
+      if (isRotatingFreeShape && selectedFreeShape) {
+        const dx = coords.x - selectedFreeShape.x;
+        const dy = coords.y - selectedFreeShape.y;
+        let rawDeg = (Math.atan2(dy, dx) * 180 / Math.PI) + 90;
+        rawDeg = (rawDeg % 360 + 360) % 360;
 
-      const guides: { x1: number; y1: number; x2: number; y2: number }[] = [];
-      const snapThreshold = 18;
-
-      // Mágneses alakzat-illesztés a többi szabad alakzathoz
-      freeShapes.forEach(other => {
-        if (other.id === selectedFreeShapeId) return;
-
-        // X igazítás
-        if (Math.abs(nextX - other.x) < snapThreshold) {
-          nextX = other.x;
-          guides.push({ x1: other.x, y1: 0, x2: other.x, y2: 360 });
-        }
-        // Y igazítás
-        if (Math.abs(nextY - other.y) < snapThreshold) {
-          nextY = other.y;
-          guides.push({ x1: 0, y1: other.y, x2: 520, y2: other.y });
+        let newRot: number;
+        if (e.shiftKey) {
+          // SHIFT: Nevezetes szögek (15°-os ugrások: 0°, 15°, 30°, 45°, 60°, 75°, 90°, 120°, 135°, 180°, stb.)
+          newRot = Math.round(rawDeg / 15) * 15 % 360;
+        } else {
+          // NORMÁL: 2 fokonkénti finom forgatás!
+          newRot = Math.round(rawDeg / 2) * 2 % 360;
         }
 
-        // Érintkező illesztés (pl. négyzet a négyzethez, háromszög a négyzethez)
-        const touchDist = other.size + (selectedFreeShape?.size || 0);
-        if (Math.abs(nextX - (other.x + touchDist)) < snapThreshold) {
-          nextX = other.x + touchDist;
-        } else if (Math.abs(nextX - (other.x - touchDist)) < snapThreshold) {
-          nextX = other.x - touchDist;
-        }
-      });
+        setFreeShapes(prev =>
+          prev.map(s => (s.id === selectedFreeShape.id ? { ...s, rotation: newRot } : s))
+        );
+        return;
+      }
 
-      setFreeSnapGuides(guides);
+      // 2. MOZGATÁS VÉGREHAJTÁSA MÁGNESES ILLESZTÉSSEL
+      if (isDraggingFreeShape && selectedFreeShapeId) {
+        let nextX = coords.x - freeDragOffset.x;
+        let nextY = coords.y - freeDragOffset.y;
 
-      setFreeShapes(prev =>
-        prev.map(s =>
-          s.id === selectedFreeShapeId
-            ? { ...s, x: Math.max(30, Math.min(490, nextX)), y: Math.max(30, Math.min(330, nextY)) }
-            : s
-        )
-      );
+        const guides: { x1: number; y1: number; x2: number; y2: number }[] = [];
+        const snapThreshold = 18;
+
+        // Mágneses alakzat-illesztés a többi szabad alakzathoz
+        freeShapes.forEach(other => {
+          if (other.id === selectedFreeShapeId) return;
+
+          // X igazítás
+          if (Math.abs(nextX - other.x) < snapThreshold) {
+            nextX = other.x;
+            guides.push({ x1: other.x, y1: 0, x2: other.x, y2: 360 });
+          }
+          // Y igazítás
+          if (Math.abs(nextY - other.y) < snapThreshold) {
+            nextY = other.y;
+            guides.push({ x1: 0, y1: other.y, x2: 520, y2: other.y });
+          }
+
+          // Érintkező illesztés (pl. négyzet a négyzethez, háromszög a négyzethez)
+          const touchDist = other.size + (selectedFreeShape?.size || 0);
+          if (Math.abs(nextX - (other.x + touchDist)) < snapThreshold) {
+            nextX = other.x + touchDist;
+          } else if (Math.abs(nextX - (other.x - touchDist)) < snapThreshold) {
+            nextX = other.x - touchDist;
+          }
+        });
+
+        setFreeSnapGuides(guides);
+
+        setFreeShapes(prev =>
+          prev.map(s =>
+            s.id === selectedFreeShapeId
+              ? { ...s, x: Math.max(30, Math.min(490, nextX)), y: Math.max(30, Math.min(330, nextY)) }
+              : s
+          )
+        );
+      }
     }
   };
 
@@ -625,7 +688,6 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
           return updated;
         });
       } else {
-        // Ha nem helyre dobta, de a darab eddig sem volt helyen, marad a tálcán
         setPuzzlePieces(prev =>
           prev.map(p => (p.id === draggedPuzzlePieceId ? { ...p, slotIndex: null } : p))
         );
@@ -639,6 +701,7 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
     // 4. Szabad alakzat felengedése
     if (subMode === 'free') {
       setIsDraggingFreeShape(false);
+      setIsRotatingFreeShape(false);
       setFreeSnapGuides([]);
     }
   };
@@ -1651,11 +1714,45 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
                           strokeWidth="2"
                           strokeDasharray="4,4"
                         />
-                        {/* 4 Sarok fogantyú */}
-                        <circle cx={-sz - 8} cy={-sz - 8} r="5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
-                        <circle cx={sz + 8} cy={-sz - 8} r="5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
-                        <circle cx={sz + 8} cy={sz + 8} r="5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
-                        <circle cx={-sz - 8} cy={sz + 8} r="5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
+                        {/* 4 Sarok méretező fogantyú */}
+                        <circle cx={-sz - 8} cy={-sz - 8} r="5.5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
+                        <circle cx={sz + 8} cy={-sz - 8} r="5.5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
+                        <circle cx={sz + 8} cy={sz + 8} r="5.5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
+                        <circle cx={-sz - 8} cy={sz + 8} r="5.5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
+
+                        {/* Forgatási fogantyú szára */}
+                        <line x1="0" y1={-sz - 8} x2="0" y2={-sz - 24} stroke="#2563eb" strokeWidth="2" />
+
+                        {/* Forgatási fogantyú gomb (Paint stílusú forgatás ikon 🔄) */}
+                        <g style={{ cursor: isRotatingFreeShape ? 'grabbing' : 'crosshair' }}>
+                          <circle
+                            cx="0"
+                            cy={-sz - 24}
+                            r="12"
+                            fill={isRotatingFreeShape ? '#eff6ff' : '#ffffff'}
+                            stroke="#2563eb"
+                            strokeWidth="2.5"
+                          />
+                          <path
+                            d={`M -5.5 ${-sz - 24} A 5.5 5.5 0 1 1 5.5 ${-sz - 24}`}
+                            fill="none"
+                            stroke="#2563eb"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                          />
+                          <polygon
+                            points={`3.5,${-sz - 28} 7.5,${-sz - 24} 3.5,${-sz - 20}`}
+                            fill="#2563eb"
+                          />
+                        </g>
+
+                        {/* Szög kijelző címke */}
+                        <g transform={`translate(0, ${sz + 24})`}>
+                          <rect x="-85" y="-12" width="170" height="24" rx="6" fill="rgba(15, 23, 42, 0.9)" />
+                          <text x="0" y="4" textAnchor="middle" fontSize="11" fontWeight="bold" fill="#ffffff">
+                            🔄 {s.rotation}° {isRotatingFreeShape ? (isShiftActive ? '[Shift: 15°]' : '[2°-os finom]') : `| Méret: ${Math.round(sz)}px`}
+                          </text>
+                        </g>
                       </g>
                     )}
                   </g>

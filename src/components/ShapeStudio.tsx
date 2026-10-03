@@ -95,6 +95,27 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
   const [initialResizeDist, setInitialResizeDist] = useState<number>(0);
   const [initialShapeSize, setInitialShapeSize] = useState<number>(0);
 
+  // Forgatási állapotok egérrel történő forgatáshoz
+  const [isRotating, setIsRotating] = useState<boolean>(false);
+  const [isShiftActive, setIsShiftActive] = useState<boolean>(false);
+  const [hoverHandle, setHoverHandle] = useState<'rotate' | 'nw' | 'ne' | 'se' | 'sw' | 'body' | null>(null);
+
+  // Shift billentyű figyelése nevezetes szögekhez
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setIsShiftActive(true);
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') setIsShiftActive(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
   // Vonal és szabadkézi rajz állapotok
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const [lastDrawPos, setLastDrawPos] = useState<{ x: number; y: number } | null>(null);
@@ -400,16 +421,19 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
 
       drawShapeOnCtx(ctx, shape);
 
-      // Kijelölő keret, fogantyúk és méret infó
+      // Kijelölő keret, fogantyúk és forgatás ikon (Paint stílus!)
       if (isSelected) {
-        ctx.restore(); // Visszaállunk a normál koordináta-rendszerbe a feliratokhoz és sarkokhoz
+        ctx.restore();
         ctx.save();
         ctx.translate(shape.x, shape.y);
+        ctx.rotate((shape.rotation * Math.PI) / 180);
 
+        const s = shape.size + 10;
+
+        // Kijelölő szaggatott keret
         ctx.strokeStyle = '#2563eb';
         ctx.lineWidth = 2;
         ctx.setLineDash([5, 5]);
-        const s = shape.size + 10;
         ctx.strokeRect(-s, -s, s * 2, s * 2);
         ctx.setLineDash([]);
 
@@ -431,20 +455,49 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
           ctx.stroke();
         });
 
-        // Forgatási fogantyú fent
+        // 1. Forgatási fogantyú szára (Connecting stem line a keret felső élétől)
+        ctx.strokeStyle = '#2563eb';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, -s);
+        ctx.lineTo(0, -s - 24);
+        ctx.stroke();
+
+        // 2. Forgatási fogantyú gomb (Circle Handle - Paint stílus)
+        ctx.fillStyle = isRotating || hoverHandle === 'rotate' ? '#eff6ff' : '#ffffff';
+        ctx.strokeStyle = isRotating || hoverHandle === 'rotate' ? '#1d4ed8' : '#2563eb';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(0, -s - 24, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // 3. Forgatási ikon (nyíl körívvel a gomb belsejében 🔄)
+        ctx.strokeStyle = '#2563eb';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, -s - 24, 6.5, -Math.PI * 0.75, Math.PI * 0.85);
+        ctx.stroke();
+
+        const arrowAngle = Math.PI * 0.85;
+        const ax = 6.5 * Math.cos(arrowAngle);
+        const ay = -s - 24 + 6.5 * Math.sin(arrowAngle);
         ctx.fillStyle = '#2563eb';
         ctx.beginPath();
-        ctx.arc(0, -s - 12, 5, 0, Math.PI * 2);
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ax - 3, ay - 4);
+        ctx.lineTo(ax + 4, ay - 3);
+        ctx.closePath();
         ctx.fill();
 
-        // Információs címke: méret, szög és tükrözés
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
-        ctx.fillRect(-85, s + 6, 170, 24);
+        // Információs címke: szög és méret
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+        ctx.fillRect(-110, s + 8, 220, 26);
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 11px sans-serif';
         ctx.textAlign = 'center';
-        const flipLabel = `${shape.flipH ? '↔' : ''}${shape.flipV ? '↕' : ''}` || 'Normál';
-        ctx.fillText(`Méret: ${Math.round(shape.size)}px | ${shape.rotation}° | ${flipLabel}`, 0, s + 22);
+        const shiftNote = isShiftActive ? '[Shift: 15°-os lépés]' : '[2°-os finom lépés]';
+        ctx.fillText(`🔄 ${shape.rotation}° ${isRotating ? shiftNote : `| Méret: ${Math.round(shape.size)}px`}`, 0, s + 25);
       }
 
       ctx.restore();
@@ -912,25 +965,53 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     const mouseY = e.clientY - rect.top;
 
     if (tool === 'select') {
-      // 1. Megvizsgáljuk, hogy a kijelölt alakzat valamelyik méretező fogantyújára kattintott-e
+      // 1. Megvizsgáljuk, hogy a kijelölt alakzat forgatási vagy méretezési fogantyújára kattintott-e
       if (selectedShape) {
         const s = selectedShape.size + 10;
-        const handles: { handle: 'nw' | 'ne' | 'se' | 'sw'; hx: number; hy: number }[] = [
-          { handle: 'nw', hx: selectedShape.x - s, hy: selectedShape.y - s },
-          { handle: 'ne', hx: selectedShape.x + s, hy: selectedShape.y - s },
-          { handle: 'se', hx: selectedShape.x + s, hy: selectedShape.y + s },
-          { handle: 'sw', hx: selectedShape.x - s, hy: selectedShape.y + s },
-        ];
+        const rotRad = (selectedShape.rotation * Math.PI) / 180;
+        const dx = mouseX - selectedShape.x;
+        const dy = mouseY - selectedShape.y;
+        const localX = dx * Math.cos(-rotRad) - dy * Math.sin(-rotRad);
+        const localY = dx * Math.sin(-rotRad) + dy * Math.cos(-rotRad);
 
-        for (const h of handles) {
-          if (Math.hypot(mouseX - h.hx, mouseY - h.hy) <= 12) {
-            setIsResizing(true);
-            setResizeHandle(h.handle);
-            setInitialResizeDist(Math.hypot(mouseX - selectedShape.x, mouseY - selectedShape.y));
-            setInitialShapeSize(selectedShape.size);
-            if (soundEnabled) speakText('Méret változtatása húzással');
-            return;
+        // A) FORGATÁSI FOGANTYÚ DETEKTÁLÁSA (Paint stílus: felső szár végén lévő kör (0, -s - 24))
+        if (Math.hypot(localX - 0, localY - (-s - 24)) <= 16) {
+          setIsRotating(true);
+          if (soundEnabled) {
+            speakText('Forgatás bekapcsolva. Alapesetben 2 fokonként forog, Shift gombbal 15 fokos nevezetes szögekre ugrik!');
           }
+          return;
+        }
+
+        // B) MÉRETEZŐ FOGANTYÚK DETEKTÁLÁSA (NW, NE, SE, SW)
+        const cornerDist = 14;
+        if (Math.hypot(localX - (-s), localY - (-s)) <= cornerDist) {
+          setIsResizing(true);
+          setResizeHandle('nw');
+          setInitialResizeDist(Math.hypot(dx, dy));
+          setInitialShapeSize(selectedShape.size);
+          return;
+        }
+        if (Math.hypot(localX - s, localY - (-s)) <= cornerDist) {
+          setIsResizing(true);
+          setResizeHandle('ne');
+          setInitialResizeDist(Math.hypot(dx, dy));
+          setInitialShapeSize(selectedShape.size);
+          return;
+        }
+        if (Math.hypot(localX - s, localY - s) <= cornerDist) {
+          setIsResizing(true);
+          setResizeHandle('se');
+          setInitialResizeDist(Math.hypot(dx, dy));
+          setInitialShapeSize(selectedShape.size);
+          return;
+        }
+        if (Math.hypot(localX - (-s), localY - s) <= cornerDist) {
+          setIsResizing(true);
+          setResizeHandle('sw');
+          setInitialResizeDist(Math.hypot(dx, dy));
+          setInitialShapeSize(selectedShape.size);
+          return;
         }
       }
 
@@ -994,7 +1075,30 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     const mouseY = e.clientY - rect.top;
 
     if (tool === 'select') {
-      // Méretezés végrehajtása húzással
+      // 1. FORGATÁS VÉGREHAJTÁSA EGÉRREL (Paint stílus)
+      if (isRotating && selectedShape) {
+        const dx = mouseX - selectedShape.x;
+        const dy = mouseY - selectedShape.y;
+        // Szög a függőlegeshez (fent = 0°) képest az óramutató járásával megegyezően
+        let rawDeg = (Math.atan2(dy, dx) * 180 / Math.PI) + 90;
+        rawDeg = (rawDeg % 360 + 360) % 360;
+
+        let newRot: number;
+        if (e.shiftKey) {
+          // SHIFT: Nevezetes szögek (15°-os ugrások: 0°, 15°, 30°, 45°, 60°, 75°, 90°, 120°, 135°, 180°, stb.)
+          newRot = Math.round(rawDeg / 15) * 15 % 360;
+        } else {
+          // NORMÁL: 2 fokonkénti finom forgatás!
+          newRot = Math.round(rawDeg / 2) * 2 % 360;
+        }
+
+        setShapes(prev =>
+          prev.map(s => (s.id === selectedShape.id ? { ...s, rotation: newRot } : s))
+        );
+        return;
+      }
+
+      // 2. MÉRETEZÉS VÉGREHAJTÁSA HÚZÁSSAL
       if (isResizing && selectedShape && initialResizeDist > 0) {
         const currentDist = Math.hypot(mouseX - selectedShape.x, mouseY - selectedShape.y);
         const scaleFactor = currentDist / initialResizeDist;
@@ -1006,14 +1110,14 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         return;
       }
 
-      // Mozgatás végrehajtása mágneses illesztéssel
+      // 3. MOZGATÁS VÉGREHAJTÁSA MÁGNESES ILLESZTÉSSEL
       if (isDragging && selectedShapeId) {
         let nextX = mouseX - dragOffset.x;
         let nextY = mouseY - dragOffset.y;
 
         const newSnapLines: { x1: number; y1: number; x2: number; y2: number }[] = [];
 
-        // 1. Igazítás a többi alakzathoz (Mágneses alakzat-illesztés!)
+        // Igazítás a többi alakzathoz (Mágneses alakzat-illesztés!)
         const snapThreshold = 18;
         shapes.forEach(other => {
           if (other.id === selectedShapeId) return;
@@ -1039,7 +1143,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
           }
         });
 
-        // 2. Igazítás a 20px-es rácshoz, ha nincs alakzathoz illeszkedve
+        // Igazítás a 20px-es rácshoz, ha nincs alakzathoz illeszkedve
         if (snapToGrid && newSnapLines.length === 0) {
           nextX = Math.round(nextX / 20) * 20;
           nextY = Math.round(nextY / 20) * 20;
@@ -1059,6 +1163,33 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
             return s;
           })
         );
+        return;
+      }
+
+      // 4. HOVER FOGANTYÚ DETEKTÁLÁS (kurzor változtatáshoz)
+      if (selectedShape && !isDragging && !isResizing && !isRotating) {
+        const s = selectedShape.size + 10;
+        const rotRad = (selectedShape.rotation * Math.PI) / 180;
+        const dx = mouseX - selectedShape.x;
+        const dy = mouseY - selectedShape.y;
+        const localX = dx * Math.cos(-rotRad) - dy * Math.sin(-rotRad);
+        const localY = dx * Math.sin(-rotRad) + dy * Math.cos(-rotRad);
+
+        if (Math.hypot(localX - 0, localY - (-s - 24)) <= 16) {
+          setHoverHandle('rotate');
+        } else if (Math.hypot(localX - (-s), localY - (-s)) <= 14) {
+          setHoverHandle('nw');
+        } else if (Math.hypot(localX - s, localY - (-s)) <= 14) {
+          setHoverHandle('ne');
+        } else if (Math.hypot(localX - s, localY - s) <= 14) {
+          setHoverHandle('se');
+        } else if (Math.hypot(localX - (-s), localY - s) <= 14) {
+          setHoverHandle('sw');
+        } else if (Math.abs(localX) <= s && Math.abs(localY) <= s) {
+          setHoverHandle('body');
+        } else {
+          setHoverHandle(null);
+        }
       }
     } else if (tool === 'drawShape' && shapeDragStart) {
       setShapeDragCurrent({ x: mouseX, y: mouseY });
@@ -1133,6 +1264,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
 
     setIsDragging(false);
     setIsResizing(false);
+    setIsRotating(false);
     setResizeHandle(null);
     setIsDrawing(false);
     setLastDrawPos(null);
@@ -1752,7 +1884,21 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
             height: 'auto',
             borderRadius: '8px',
             boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-            cursor: tool === 'select' ? (isResizing ? (resizeHandle === 'nw' || resizeHandle === 'se' ? 'nwse-resize' : 'nesw-resize') : (isDragging ? 'grabbing' : 'grab')) : (tool === 'drawShape' || tool === 'customPoly' || tool === 'line' ? 'crosshair' : 'default'),
+            cursor: tool === 'select'
+              ? (isRotating
+                ? 'grabbing'
+                : hoverHandle === 'rotate'
+                ? 'crosshair'
+                : (isResizing && (resizeHandle === 'nw' || resizeHandle === 'se')) || hoverHandle === 'nw' || hoverHandle === 'se'
+                ? 'nwse-resize'
+                : (isResizing && (resizeHandle === 'ne' || resizeHandle === 'sw')) || hoverHandle === 'ne' || hoverHandle === 'sw'
+                ? 'nesw-resize'
+                : isDragging
+                ? 'grabbing'
+                : hoverHandle === 'body'
+                ? 'grab'
+                : 'default')
+              : (tool === 'drawShape' || tool === 'customPoly' || tool === 'line' ? 'crosshair' : 'default'),
             background: '#ffffff',
             touchAction: 'none'
           }}
@@ -1760,7 +1906,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
 
         {tool === 'select' && (
           <div style={{ marginTop: '8px', fontSize: '0.88rem', color: 'var(--primary)', fontWeight: 700 }}>
-            💡 <strong>Mozgatás és méretezés:</strong> Fogd meg az alakzatot a mozgatáshoz, vagy ragadd meg a kijelölő keret <strong>4 sarkát (fogantyúit)</strong> a méretének növeléséhez vagy csökkentéséhez!
+            💡 <strong>Paint stílusú forgatás & méretezés:</strong> Ragadd meg a felső <strong>kék forgatás ikont (🔄)</strong> az elforgatáshoz! Alapesetben <strong>2°-onként</strong> fordul, a <strong>Shift gombot nyomva tartva</strong> pedig nevezetes szögekre (15°-onként) ugrik! A 4 saroknál pedig átméretezheted!
           </div>
         )}
 
