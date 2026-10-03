@@ -714,19 +714,20 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         ctx.setLineDash([]);
 
         // 4 Sarok méretező fogantyú (Resize Handles: NW, NE, SE, SW)
-        const handleCorners = [
-          { x: -s, y: -s },
-          { x: s, y: -s },
-          { x: s, y: s },
-          { x: -s, y: s }
+        const handleCorners: { x: number; y: number; handle: 'nw' | 'ne' | 'se' | 'sw' }[] = [
+          { x: -s, y: -s, handle: 'nw' },
+          { x: s, y: -s, handle: 'ne' },
+          { x: s, y: s, handle: 'se' },
+          { x: -s, y: s, handle: 'sw' }
         ];
 
         handleCorners.forEach(hc => {
-          ctx.fillStyle = '#ffffff';
-          ctx.strokeStyle = '#2563eb';
+          const isHandleActive = hoverHandle === hc.handle || (isResizing && resizeHandle === hc.handle);
+          ctx.fillStyle = isHandleActive ? '#dbeafe' : '#ffffff';
+          ctx.strokeStyle = isHandleActive ? '#1d4ed8' : '#2563eb';
           ctx.lineWidth = 2.5;
           ctx.beginPath();
-          ctx.arc(hc.x, hc.y, 6, 0, Math.PI * 2);
+          ctx.arc(hc.x, hc.y, isHandleActive ? 8 : 7, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
         });
@@ -1237,8 +1238,8 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
 
     if (tool === 'select') {
       // 1. Megvizsgáljuk, hogy a kijelölt alakzat forgatási vagy méretezési fogantyújára kattintott-e
@@ -1251,7 +1252,7 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         const localY = dx * Math.sin(-rotRad) + dy * Math.cos(-rotRad);
 
         // A) FORGATÁSI FOGANTYÚ DETEKTÁLÁSA (Paint stílus: felső szár végén lévő kör (0, -s - 24))
-        if (Math.hypot(localX - 0, localY - (-s - 24)) <= 16) {
+        if (Math.hypot(localX - 0, localY - (-s - 24)) <= 18) {
           setIsRotating(true);
           if (soundEnabled) {
             speakText('Forgatás bekapcsolva. Alapesetben 2 fokonként forog, Shift gombbal 15 fokos nevezetes szögekre ugrik!');
@@ -1259,8 +1260,8 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
           return;
         }
 
-        // B) MÉRETEZŐ FOGANTYÚK DETEKTÁLÁSA (NW, NE, SE, SW)
-        const cornerDist = 14;
+        // B) MÉRETEZŐ FOGANTYÚK DETEKTÁLÁSA (NW, NE, SE, SW) - Bőséges 20px-es kattintási távolság!
+        const cornerDist = 20;
         if (Math.hypot(localX - (-s), localY - (-s)) <= cornerDist) {
           setIsResizing(true);
           setResizeHandle('nw');
@@ -1347,8 +1348,8 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
 
     if (tool === 'select') {
       // 1. FORGATÁS VÉGREHAJTÁSA EGÉRREL (Paint stílus)
@@ -1451,15 +1452,15 @@ export const ShapeStudio: React.FC<{ soundEnabled: boolean }> = ({ soundEnabled 
         const localX = dx * Math.cos(-rotRad) - dy * Math.sin(-rotRad);
         const localY = dx * Math.sin(-rotRad) + dy * Math.cos(-rotRad);
 
-        if (Math.hypot(localX - 0, localY - (-s - 24)) <= 16) {
+        if (Math.hypot(localX - 0, localY - (-s - 24)) <= 18) {
           setHoverHandle('rotate');
-        } else if (Math.hypot(localX - (-s), localY - (-s)) <= 14) {
+        } else if (Math.hypot(localX - (-s), localY - (-s)) <= 20) {
           setHoverHandle('nw');
-        } else if (Math.hypot(localX - s, localY - (-s)) <= 14) {
+        } else if (Math.hypot(localX - s, localY - (-s)) <= 20) {
           setHoverHandle('ne');
-        } else if (Math.hypot(localX - s, localY - s) <= 14) {
+        } else if (Math.hypot(localX - s, localY - s) <= 20) {
           setHoverHandle('se');
-        } else if (Math.hypot(localX - (-s), localY - s) <= 14) {
+        } else if (Math.hypot(localX - (-s), localY - s) <= 20) {
           setHoverHandle('sw');
         } else if (Math.abs(localX) <= s && Math.abs(localY) <= s) {
           setHoverHandle('body');

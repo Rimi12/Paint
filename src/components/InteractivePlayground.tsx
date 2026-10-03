@@ -104,6 +104,11 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
   const [selectedFreeShapeId, setSelectedFreeShapeId] = useState<string | null>('f1');
   const [isDraggingFreeShape, setIsDraggingFreeShape] = useState<boolean>(false);
   const [isRotatingFreeShape, setIsRotatingFreeShape] = useState<boolean>(false);
+  const [isResizingFreeShape, setIsResizingFreeShape] = useState<boolean>(false);
+  const [freeResizeHandle, setFreeResizeHandle] = useState<'nw' | 'ne' | 'se' | 'sw' | null>(null);
+  const [initialFreeResizeDist, setInitialFreeResizeDist] = useState<number>(0);
+  const [initialFreeShapeSize, setInitialFreeShapeSize] = useState<number>(0);
+  const [hoveredFreeCorner, setHoveredFreeCorner] = useState<'nw' | 'ne' | 'se' | 'sw' | null>(null);
   const [isShiftActive, setIsShiftActive] = useState<boolean>(false);
   const [freeDragOffset, setFreeDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [freeActiveColor, setFreeActiveColor] = useState<string>('#3b82f6');
@@ -133,7 +138,7 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
   const sliceColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'];
 
   // Segédfüggvény SVG koordináták lekérésére egér és érintés esetén
-  const getSvgCoordinates = (e: React.MouseEvent<SVGSVGElement> | React.PointerEvent<SVGSVGElement>) => {
+  const getSvgCoordinates = (e: React.MouseEvent<any> | React.PointerEvent<any> | { clientX: number; clientY: number }) => {
     if (!svgRef.current) return { x: 0, y: 0 };
     const rect = svgRef.current.getBoundingClientRect();
     const scaleX = 520 / rect.width;
@@ -490,7 +495,7 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
         }
       }
     } else if (subMode === 'free') {
-      // 1. Megvizsgáljuk, hogy a kiválasztott alakzat forgatási fogantyújára kattintott-e a tanuló
+      // 1. Megvizsgáljuk, hogy a kiválasztott alakzat forgatási vagy méretezési fogantyújára kattintott-e a tanuló
       if (selectedFreeShape) {
         const sz = selectedFreeShape.size;
         const rotRad = (selectedFreeShape.rotation * Math.PI) / 180;
@@ -499,13 +504,50 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
         const localX = dx * Math.cos(-rotRad) - dy * Math.sin(-rotRad);
         const localY = dx * Math.sin(-rotRad) + dy * Math.cos(-rotRad);
 
-        // Forgatási fogantyú felső pontja: (0, -sz - 24)
+        // A) Forgatási fogantyú felső pontja: (0, -sz - 24)
         if (Math.hypot(localX - 0, localY - (-sz - 24)) <= 18) {
           setIsRotatingFreeShape(true);
           (e.target as Element).setPointerCapture?.(e.pointerId);
           if (soundEnabled) {
             speakText('Forgatás egérrel. 2 fokonként forog, a Shift gombbal 15 fokos nevezetes szögekre ugrik!');
           }
+          return;
+        }
+
+        // B) 4 Sarok méretező fogantyú (NW, NE, SE, SW)
+        const cornerTargetDist = sz + 8;
+        const cornerHitRadius = 20;
+
+        if (Math.hypot(localX - (-cornerTargetDist), localY - (-cornerTargetDist)) <= cornerHitRadius) {
+          setIsResizingFreeShape(true);
+          setFreeResizeHandle('nw');
+          setInitialFreeResizeDist(Math.hypot(dx, dy));
+          setInitialFreeShapeSize(selectedFreeShape.size);
+          (e.target as Element).setPointerCapture?.(e.pointerId);
+          return;
+        }
+        if (Math.hypot(localX - cornerTargetDist, localY - (-cornerTargetDist)) <= cornerHitRadius) {
+          setIsResizingFreeShape(true);
+          setFreeResizeHandle('ne');
+          setInitialFreeResizeDist(Math.hypot(dx, dy));
+          setInitialFreeShapeSize(selectedFreeShape.size);
+          (e.target as Element).setPointerCapture?.(e.pointerId);
+          return;
+        }
+        if (Math.hypot(localX - cornerTargetDist, localY - cornerTargetDist) <= cornerHitRadius) {
+          setIsResizingFreeShape(true);
+          setFreeResizeHandle('se');
+          setInitialFreeResizeDist(Math.hypot(dx, dy));
+          setInitialFreeShapeSize(selectedFreeShape.size);
+          (e.target as Element).setPointerCapture?.(e.pointerId);
+          return;
+        }
+        if (Math.hypot(localX - (-cornerTargetDist), localY - cornerTargetDist) <= cornerHitRadius) {
+          setIsResizingFreeShape(true);
+          setFreeResizeHandle('sw');
+          setInitialFreeResizeDist(Math.hypot(dx, dy));
+          setInitialFreeShapeSize(selectedFreeShape.size);
+          (e.target as Element).setPointerCapture?.(e.pointerId);
           return;
         }
       }
@@ -599,7 +641,19 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
         return;
       }
 
-      // 2. MOZGATÁS VÉGREHAJTÁSA MÁGNESES ILLESZTÉSSEL
+      // 2. MÉRETEZÉS VÉGREHAJTÁSA EGÉRREL (Sarok fogantyúk)
+      if (isResizingFreeShape && selectedFreeShape && initialFreeResizeDist > 0) {
+        const currentDist = Math.hypot(coords.x - selectedFreeShape.x, coords.y - selectedFreeShape.y);
+        const scaleFactor = currentDist / initialFreeResizeDist;
+        const newSize = Math.max(25, Math.min(180, Math.round(initialFreeShapeSize * scaleFactor)));
+
+        setFreeShapes(prev =>
+          prev.map(s => (s.id === selectedFreeShape.id ? { ...s, size: newSize } : s))
+        );
+        return;
+      }
+
+      // 3. MOZGATÁS VÉGREHAJTÁSA MÁGNESES ILLESZTÉSSEL
       if (isDraggingFreeShape && selectedFreeShapeId) {
         let nextX = coords.x - freeDragOffset.x;
         let nextY = coords.y - freeDragOffset.y;
@@ -640,6 +694,29 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
               : s
           )
         );
+        return;
+      }
+
+      // 4. Hover sarok detektálás kurzor animációhoz
+      if (selectedFreeShape && !isDraggingFreeShape && !isRotatingFreeShape && !isResizingFreeShape) {
+        const s = selectedFreeShape.size + 8;
+        const rotRad = (selectedFreeShape.rotation * Math.PI) / 180;
+        const dx = coords.x - selectedFreeShape.x;
+        const dy = coords.y - selectedFreeShape.y;
+        const localX = dx * Math.cos(-rotRad) - dy * Math.sin(-rotRad);
+        const localY = dx * Math.sin(-rotRad) + dy * Math.cos(-rotRad);
+
+        if (Math.hypot(localX - (-s), localY - (-s)) <= 16) {
+          setHoveredFreeCorner('nw');
+        } else if (Math.hypot(localX - s, localY - (-s)) <= 16) {
+          setHoveredFreeCorner('ne');
+        } else if (Math.hypot(localX - s, localY - s) <= 16) {
+          setHoveredFreeCorner('se');
+        } else if (Math.hypot(localX - (-s), localY - s) <= 16) {
+          setHoveredFreeCorner('sw');
+        } else {
+          setHoveredFreeCorner(null);
+        }
       }
     }
   };
@@ -700,8 +777,13 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
 
     // 4. Szabad alakzat felengedése
     if (subMode === 'free') {
+      if (isResizingFreeShape && soundEnabled && selectedFreeShape) {
+        speakText(`Méret: ${Math.round(selectedFreeShape.size)} képpont`);
+      }
       setIsDraggingFreeShape(false);
       setIsRotatingFreeShape(false);
+      setIsResizingFreeShape(false);
+      setFreeResizeHandle(null);
       setFreeSnapGuides([]);
     }
   };
@@ -1714,11 +1796,106 @@ export const InteractivePlayground: React.FC<{ soundEnabled: boolean }> = ({ sou
                           strokeWidth="2"
                           strokeDasharray="4,4"
                         />
-                        {/* 4 Sarok méretező fogantyú */}
-                        <circle cx={-sz - 8} cy={-sz - 8} r="5.5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
-                        <circle cx={sz + 8} cy={-sz - 8} r="5.5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
-                        <circle cx={sz + 8} cy={sz + 8} r="5.5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
-                        <circle cx={-sz - 8} cy={sz + 8} r="5.5" fill="#ffffff" stroke="#2563eb" strokeWidth="2" />
+                        {/* 4 Sarok méretező fogantyú közvetlenül megfogható, tágas kattintási területtel */}
+                        {/* Észak-Nyugat (NW) */}
+                        <g
+                          style={{ cursor: 'nwse-resize' }}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            setSelectedFreeShapeId(s.id);
+                            setIsResizingFreeShape(true);
+                            setFreeResizeHandle('nw');
+                            const coords = getSvgCoordinates(e);
+                            setInitialFreeResizeDist(Math.hypot(coords.x - s.x, coords.y - s.y));
+                            setInitialFreeShapeSize(s.size);
+                            (e.target as Element).setPointerCapture?.(e.pointerId);
+                          }}
+                        >
+                          <circle cx={-sz - 8} cy={-sz - 8} r="15" fill="transparent" />
+                          <circle
+                            cx={-sz - 8}
+                            cy={-sz - 8}
+                            r="7"
+                            fill={hoveredFreeCorner === 'nw' || (isResizingFreeShape && freeResizeHandle === 'nw') ? '#eff6ff' : '#ffffff'}
+                            stroke="#2563eb"
+                            strokeWidth="2.5"
+                          />
+                        </g>
+
+                        {/* Észak-Kelet (NE) */}
+                        <g
+                          style={{ cursor: 'nesw-resize' }}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            setSelectedFreeShapeId(s.id);
+                            setIsResizingFreeShape(true);
+                            setFreeResizeHandle('ne');
+                            const coords = getSvgCoordinates(e);
+                            setInitialFreeResizeDist(Math.hypot(coords.x - s.x, coords.y - s.y));
+                            setInitialFreeShapeSize(s.size);
+                            (e.target as Element).setPointerCapture?.(e.pointerId);
+                          }}
+                        >
+                          <circle cx={sz + 8} cy={-sz - 8} r="15" fill="transparent" />
+                          <circle
+                            cx={sz + 8}
+                            cy={-sz - 8}
+                            r="7"
+                            fill={hoveredFreeCorner === 'ne' || (isResizingFreeShape && freeResizeHandle === 'ne') ? '#eff6ff' : '#ffffff'}
+                            stroke="#2563eb"
+                            strokeWidth="2.5"
+                          />
+                        </g>
+
+                        {/* Dél-Kelet (SE) */}
+                        <g
+                          style={{ cursor: 'nwse-resize' }}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            setSelectedFreeShapeId(s.id);
+                            setIsResizingFreeShape(true);
+                            setFreeResizeHandle('se');
+                            const coords = getSvgCoordinates(e);
+                            setInitialFreeResizeDist(Math.hypot(coords.x - s.x, coords.y - s.y));
+                            setInitialFreeShapeSize(s.size);
+                            (e.target as Element).setPointerCapture?.(e.pointerId);
+                          }}
+                        >
+                          <circle cx={sz + 8} cy={sz + 8} r="15" fill="transparent" />
+                          <circle
+                            cx={sz + 8}
+                            cy={sz + 8}
+                            r="7"
+                            fill={hoveredFreeCorner === 'se' || (isResizingFreeShape && freeResizeHandle === 'se') ? '#eff6ff' : '#ffffff'}
+                            stroke="#2563eb"
+                            strokeWidth="2.5"
+                          />
+                        </g>
+
+                        {/* Dél-Nyugat (SW) */}
+                        <g
+                          style={{ cursor: 'nesw-resize' }}
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            setSelectedFreeShapeId(s.id);
+                            setIsResizingFreeShape(true);
+                            setFreeResizeHandle('sw');
+                            const coords = getSvgCoordinates(e);
+                            setInitialFreeResizeDist(Math.hypot(coords.x - s.x, coords.y - s.y));
+                            setInitialFreeShapeSize(s.size);
+                            (e.target as Element).setPointerCapture?.(e.pointerId);
+                          }}
+                        >
+                          <circle cx={-sz - 8} cy={sz + 8} r="15" fill="transparent" />
+                          <circle
+                            cx={-sz - 8}
+                            cy={sz + 8}
+                            r="7"
+                            fill={hoveredFreeCorner === 'sw' || (isResizingFreeShape && freeResizeHandle === 'sw') ? '#eff6ff' : '#ffffff'}
+                            stroke="#2563eb"
+                            strokeWidth="2.5"
+                          />
+                        </g>
 
                         {/* Forgatási fogantyú szára */}
                         <line x1="0" y1={-sz - 8} x2="0" y2={-sz - 24} stroke="#2563eb" strokeWidth="2" />
